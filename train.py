@@ -65,7 +65,7 @@ class ResNet(nn.Module):
         self.ending = Sequential(
             AvgPool2d(2),
             Flatten(0),
-            Linear(1024,18),
+            Linear(1024,17),
             Sigmoid()
         )
     def forward(self,x):
