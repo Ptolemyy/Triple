@@ -73,6 +73,12 @@ class ResNet(nn.Module):
         x = self.net(x)
         x = self.ending(x)
         return x
+
+class Tree:
+    def __init__(self):
+        pass
+
+
 net = ResNet()
 output = net(input)
 print(output)
