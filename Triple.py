@@ -55,9 +55,11 @@ def place(pos,num):
         search(pos,num)
         update_pool()
 def set_board(x):
+    global board
     board = np.copy(x)
     board = np.reshape(board,16)
 def set_pool(x):
+    global num_pool
     num_pool = np.copy(x)
 if __name__ == "__main__":
     while True:

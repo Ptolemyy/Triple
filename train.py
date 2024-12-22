@@ -73,7 +73,7 @@ class Node:
         self.Q = self.V/max(self.V)
         gm.set_board(self.board)
         possible_num = gm.possible_num()
-        self.num_pool = [possible_num[x % len(possible_num)] for x in pool]
+        self.num_pool = np.array([possible_num[x % len(possible_num)] for x in pool])
         gm.set_pool = self.num_pool
         
         input1 = np.pad(self.board,pad_width=1,mode="constant",constant_values=0)
@@ -87,20 +87,22 @@ class Node:
         self.P = self.output[:-1:]
         self.V0 = self.output[16]
 
+    def make_leafs(self):
+        board_1 = np.reshape(self.board,16)
+        raw_sliced = 1-np.array([min(x,1) for x in board_1])
+        raw_sliced *= self.num_pool[0]
+        raw_sliced = np.reshape(raw_sliced,(4,4))
+
+        #enumerate
+        return raw_sliced
+        
+
 pool = np.random.randint(10,99,1000)
 tree = []
-
 init_board = np.array([[0,0,0,0],
-                       [0,0,0,0],
+                       [0,0,81,0],
                        [0,0,0,0],
                        [0,0,0,0]])
 init_pool = pool[:2:]
-print(init_board,init_pool)
-#tree.append(Node)
-
-
-tree = Node(board = init_board , pool = init_pool, V = [1,2,3,4])
-
-
-#output = net(input)
-#print(output)
+tree.append(Node(board = init_board , pool = init_pool, V = [1,2]))
+print(tree[0].make_leafs())
