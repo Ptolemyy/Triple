@@ -2,19 +2,7 @@ import torch
 from torch import nn
 import numpy as np
 from torch.nn import Sequential,Conv2d,Linear,MaxPool2d,Flatten,ReLU,AvgPool2d,Sigmoid
-
-input1 = np.array([[3,0,0,0],
-                   [0,3,3,0],
-                   [0,0,0,0],
-                   [0,0,0,0]])
-input2 = np.array([1,1])
-
-input1 = np.pad(input1,pad_width=1,mode="constant",constant_values=0)
-input2 = np.pad(input2,((0,2)),mode="constant",constant_values=0)
-input2 = np.reshape(input2,(2,2))
-input2 = np.pad(input2,((0,4),(0,4)),mode="constant",constant_values=0)
-input = torch.tensor(input1+input2,dtype=torch.float32)
-input = torch.reshape(input,(1,6,6))
+import Triple as gm
 
 class BasicNet(nn.Module):
     def __init__(self,channel):
@@ -49,7 +37,7 @@ class Bottleneck(nn.Module):
         x = self.relu(x)
         return x
 
-class ResNet(nn.Module):
+class ResNet(nn.Module):#待修改
     def __init__(self):
         super(ResNet, self).__init__()
         self.initialize = Sequential(
@@ -74,11 +62,36 @@ class ResNet(nn.Module):
         x = self.ending(x)
         return x
 
-class Tree:
-    def __init__(self):
-        pass
+class Node:
+    def __init__(self, board = [], num_pool = [], point = 0, V = [], N = 0):
+        super(Node,self).__init__()
+        self.board = board
+        self.num_pool = num_pool
+        self.point = point
+        self.N_a = 0 #下一层节点访问次数总和
+        self.V = 1/np.array(V)
+        self.Q = self.V/max(self.V)
+
+        gm.set_board(self.board)
+        gm.set_pool = self.num_pool
+        
+    def net(self):
+        input1 = np.pad(self.board,pad_width=1,mode="constant",constant_values=0)
+        input2 = np.pad(self.num_pool,((0,2)),mode="constant",constant_values=0)
+        input2 = np.reshape(input2,(2,2))
+        input2 = np.pad(input2,((0,4),(0,4)),mode="constant",constant_values=0)
+        input = torch.tensor(input1+input2,dtype=torch.float32)
+        input = torch.reshape(input,(1,6,6))
+        resnet = ResNet()
+        self.output = resnet(input)
+        self.P = self.output[:-1:]
+        self.V0 = self.output[16]
+
+pool = np.random.randint(10,99,1000)
+print(pool)
+
+tree = Node(V = [1,2,3,4])
 
 
-net = ResNet()
-output = net(input)
-print(output)
+#output = net(input)
+#print(output)
