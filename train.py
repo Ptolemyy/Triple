@@ -63,19 +63,19 @@ class ResNet(nn.Module):#待修改
         return x
 
 class Node:
-    def __init__(self, board = [], num_pool = [], point = 0, V = [], N = 0):
+    def __init__(self, board, pool, point = 0, V = [], N=0, ar=0):
         super(Node,self).__init__()
         self.board = board
-        self.num_pool = num_pool
+        self.pool = pool
         self.point = point
         self.N_a = 0 #下一层节点访问次数总和
         self.V = 1/np.array(V)
         self.Q = self.V/max(self.V)
-
         gm.set_board(self.board)
+        possible_num = gm.possible_num()
+        self.num_pool = [possible_num[x % len(possible_num)] for x in pool]
         gm.set_pool = self.num_pool
         
-    def net(self):
         input1 = np.pad(self.board,pad_width=1,mode="constant",constant_values=0)
         input2 = np.pad(self.num_pool,((0,2)),mode="constant",constant_values=0)
         input2 = np.reshape(input2,(2,2))
@@ -88,9 +88,18 @@ class Node:
         self.V0 = self.output[16]
 
 pool = np.random.randint(10,99,1000)
-print(pool)
+tree = []
 
-tree = Node(V = [1,2,3,4])
+init_board = np.array([[0,0,0,0],
+                       [0,0,0,0],
+                       [0,0,0,0],
+                       [0,0,0,0]])
+init_pool = pool[:2:]
+print(init_board,init_pool)
+#tree.append(Node)
+
+
+tree = Node(board = init_board , pool = init_pool, V = [1,2,3,4])
 
 
 #output = net(input)
