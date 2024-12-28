@@ -63,14 +63,15 @@ class ResNet(nn.Module):#待修改
         return x
 
 class Node:
-    def __init__(self, board, pool, point = 0, V = [], N=0, ar=0):
+    def __init__(self, board, pool, point = 0, num = 0, N=0, ar=0):
         super(Node,self).__init__()
         self.board = board
         self.pool = pool
         self.point = point
-        self.N_a = 0 #下一层节点访问次数总和
-        self.V = 1/np.array(V)
-        self.Q = self.V/max(self.V)
+        self.ar = ar
+        self.num = num
+        self.V = []
+
         gm.set_board(self.board)
         possible_num = gm.possible_num()
         self.num_pool = np.array([possible_num[x % len(possible_num)] for x in pool])
@@ -87,22 +88,39 @@ class Node:
         self.P = self.output[:-1:]
         self.V0 = self.output[16]
 
-    def make_leafs(self):
+    def calc(self):
+        self.N_b = 0 #下一层节点访问次数总和
+        self.V = 1/np.array(self.V)
+        self.Q = self.V/max(self.V)
+
+    def make_leafs_prop(self):
         board_1 = np.reshape(self.board,16)
         raw_sliced = 1-np.array([min(x,1) for x in board_1])
-        raw_sliced *= self.num_pool[0]
-        raw_sliced = np.reshape(raw_sliced,(4,4))
+        board_list = []
+        for i,x in enumerate(raw_sliced):
+            board_ = np.copy(board_1)
+            board_[i] = x * self.num_pool[0]
+            board_ = np.reshape(board_,(4,4))
+            board_list.append(board_)
+        return board_list
 
-        #enumerate
-        return raw_sliced
-        
+def make_leafs(Tree, pool, father, point):
+    prop = father.make_leafs_prop()
+    ar = father.ar
+    init_pool = pool[ar:ar+2]
+    for i,x in enumerate(prop):
+        Tree.append(Node(board = x, pool = init_pool, point = point, num = i, ar = ar+1))
+    return Tree
 
-pool = np.random.randint(10,99,1000)
+pool = np.random.randint(10,99,3000)
 tree = []
 init_board = np.array([[0,0,0,0],
                        [0,0,81,0],
                        [0,0,0,0],
                        [0,0,0,0]])
-init_pool = pool[:2:]
-tree.append(Node(board = init_board , pool = init_pool, V = [1,2]))
-print(tree[0].make_leafs())
+init_pool = pool[:2]
+tree.append(Node(board = init_board , pool = init_pool, point=-1))
+
+for i, x in enumerate(tree):
+    if x.point == -1 and x.V == []:
+        tree = make_leafs(tree, pool, x, i)
