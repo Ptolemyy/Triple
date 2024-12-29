@@ -63,15 +63,17 @@ class ResNet(nn.Module):#待修改
         return x
 
 class Node:
-    def __init__(self, board, pool, point = 0, num = 0, N=0, ar=0):
+    def __init__(self, board, pool, point = 0, num = 0, ar=0):
         super(Node,self).__init__()
         self.board = board
         self.pool = pool
         self.point = point
         self.ar = ar
+        self.N = 0
         self.num = num
         self.V = []
-
+        self.N0 = []
+    
         gm.set_board(self.board)
         possible_num = gm.possible_num()
         self.num_pool = np.array([possible_num[x % len(possible_num)] for x in pool])
@@ -85,21 +87,29 @@ class Node:
         input = torch.reshape(input,(1,6,6))
         resnet = ResNet()
         self.output = resnet(input)
-        self.P = self.output[:-1:]
+        self.P = self.output[:-1:].detach()
         self.V0 = self.output[16]
 
-    def calc(self):
-        self.N_b = 0 #下一层节点访问次数总和
-        self.V = 1/np.array(self.V)
+    def backup_calc(self,c):
+        self.N_s = np.sum(self.N0)
+        self.V = np.array(self.V)
+        self.V = np.where(self.V == 0, np.inf, self.V)
+        self.V = 1/self.V
         self.Q = self.V/max(self.V)
+        self.puct = (self.N_s ** 1/2) / (np.ones(16) + self.N0)
+        self.U = c * self.P * self.puct
+        return np.argmax(self.Q + self.U)
 
     def make_leafs_prop(self):
         board_1 = np.reshape(self.board,16)
         raw_sliced = 1-np.array([min(x,1) for x in board_1])
         board_list = []
+        self.P = self.P * raw_sliced #不合法节点
         for i,x in enumerate(raw_sliced):
             board_ = np.copy(board_1)
             board_[i] = x * self.num_pool[0]
+            if x == 0: #不合法节点
+                board_ = np.full(16,-1)
             board_ = np.reshape(board_,(4,4))
             board_list.append(board_)
         return board_list
@@ -112,6 +122,21 @@ def make_leafs(Tree, pool, father, point):
         Tree.append(Node(board = x, pool = init_pool, point = point, num = i, ar = ar+1))
     return Tree
 
+def search_nodes(Tree, point):
+    V = np.zeros(16)
+    N = np.zeros(16)
+    for i in Tree:
+        if i.point == point and np.any(i.board!=-1): #查找所有叶节点 且合法
+            V[i.num] = i.V0
+            N[i.num] = i.N
+    return V, N
+
+def backup(Tree):
+    ...
+
+maxium_visit_count = 10
+c_puct = 1
+
 pool = np.random.randint(10,99,3000)
 tree = []
 init_board = np.array([[0,0,0,0],
@@ -122,5 +147,6 @@ init_pool = pool[:2]
 tree.append(Node(board = init_board , pool = init_pool, point=-1))
 
 for i, x in enumerate(tree):
-    if x.point == -1 and x.V == []:
+    if (x.point == -1 or x.N == maxium_visit_count) and x.V == []:
         tree = make_leafs(tree, pool, x, i)
+        x.V, x.N0 = search_nodes(tree, i)
