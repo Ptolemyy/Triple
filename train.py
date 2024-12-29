@@ -80,31 +80,29 @@ class Node:
         self.V = np.full(16,-1)
         self.N0 = []
         
-
-        if np.any(self.board!=-1):
-            gm.deep_search()
-
         possible_num = gm.possible_num()
         self.num_pool = np.array([possible_num[x % len(possible_num)] for x in pool])
         gm.set_pool = self.num_pool
-        
-        input1 = np.pad(self.board,pad_width=1,mode="constant",constant_values=0)
-        input2 = np.pad(self.num_pool,((0,2)),mode="constant",constant_values=0)
-        input2 = np.reshape(input2,(2,2))
-        input2 = np.pad(input2,((0,4),(0,4)),mode="constant",constant_values=0)
-        input = torch.tensor(input1+input2,dtype=torch.float32)
-        input = torch.reshape(input,(1,6,6))
-        input = torch.tensor(input,dtype=torch.float16)
-        input = input.cuda()
+        if np.any(self.board!=-1):
+            gm.deep_search()
+            input1 = np.pad(self.board,pad_width=1,mode="constant",constant_values=0)
+            input2 = np.pad(self.num_pool,((0,2)),mode="constant",constant_values=0)
+            input2 = np.reshape(input2,(2,2))
+            input2 = np.pad(input2,((0,4),(0,4)),mode="constant",constant_values=0)
+            input = torch.tensor(input1+input2,dtype=torch.float32)
+            input = torch.reshape(input,(1,6,6))
+            input = torch.tensor(input,dtype=torch.float16)
+            input = input.cuda()
 
-        resnet = ResNet()
-        resnet = resnet.cuda()
-        resnet = resnet.half()
-        self.output = resnet(input)
-        self.P = self.output[:-1:].detach()
-        self.P = self.P.cpu()
-        self.V0 = self.output[16]
-        self.V0 = self.V0.cpu()
+            with torch.no_grad():
+                resnet = ResNet()
+                resnet = resnet.cuda()
+                resnet = resnet.half()
+                self.output = resnet(input)
+                self.P = self.output[:-1:].detach()
+                self.P = self.P.cpu()
+                self.V0 = self.output[16]
+                self.V0 = self.V0.cpu()
 
     def backup_calc(self, c):
         self.N_s = np.sum(self.N0)
