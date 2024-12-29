@@ -61,6 +61,12 @@ def set_board(x):
 def set_pool(x):
     global num_pool
     num_pool = np.copy(x)
+def deep_search():
+    global board
+    for i, x in enumerate(board):
+        if x != 0:
+            search(i, x)
+
 if __name__ == "__main__":
     while True:
         print(np.reshape(board,(4,4)))
