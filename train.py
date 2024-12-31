@@ -57,9 +57,8 @@ class ResNet(nn.Module):
         for _ in range(0,len-1):
             block.append(BasicNet(256))
         block.append(Bottleneck(256,256))
-        for _ in range(0,len-1):
-            block.append(BasicNet(256))
-        block.append(Bottleneck(256,256))
+        block = block * 2
+
         return Sequential(*block)
     
     def forward(self,x):
@@ -69,9 +68,10 @@ class ResNet(nn.Module):
         return x
 
 class Node:
-    def __init__(self, board, pool, point = 0, num = 0, ar=0, placement = np.zeros(16)):
+    def __init__(self,  pool, board,
+                  point = 0, num = 0, ar=0, placement = np.full(2,-1)):
         super(Node,self).__init__()
-        self.board = board
+        self.placement = placement
         self.pool = pool
         self.point = point
         self.ar = ar
@@ -79,17 +79,27 @@ class Node:
         self.num = num
         self.V = np.full(16,-1)
         self.N0 = []
-        
+        self.board = board
+
+        gm.board = np.copy(self.board)
+        gm.board = np.reshape(gm.board, 16)
+        if placement[0] >= 0:
+            gm.place(placement[0], placement[1])
+        if np.any(placement == -2):
+            gm.board = np.full(16, -1)
+        self.board = np.copy(gm.board)
+        self.board = np.reshape(self.board, (4, 4))
+
         possible_num = gm.possible_num()
         self.num_pool = np.array([possible_num[x % len(possible_num)] for x in pool])
         gm.set_pool = self.num_pool
+
         if np.any(self.board!=-1):
-            gm.deep_search()
             input1 = np.pad(self.board,pad_width=1,mode="constant",constant_values=0)
             input2 = np.pad(self.num_pool,((0,2)),mode="constant",constant_values=0)
             input2 = np.reshape(input2,(2,2))
             input2 = np.pad(input2,((0,4),(0,4)),mode="constant",constant_values=0)
-            input = torch.tensor(input1+input2,dtype=torch.float32)
+            input = torch.tensor(input1 + input2,dtype=torch.float32)
             input = torch.reshape(input,(1,6,6))
             input = torch.tensor(input,dtype=torch.float16)
             input = input.cuda()
@@ -103,7 +113,8 @@ class Node:
                 self.P = self.P.cpu()
                 self.V0 = self.output[16]
                 self.V0 = self.V0.cpu()
-
+        else:
+            self.V0 = 0
     def backup_calc(self, c):
         self.N_s = np.sum(self.N0)
         self.V = np.array(self.V)
@@ -117,16 +128,14 @@ class Node:
     def make_leafs_prop(self):
         board_1 = np.reshape(self.board,16)
         raw_sliced = 1 - np.array([min(x,1) for x in board_1])
-        board_list = []
+        placement_list = []
         self.P = self.P * raw_sliced                        #不合法节点
         for i,x in enumerate(raw_sliced):
-            board_ = np.copy(board_1)
-            board_[i] = x * self.num_pool[0]
-            if x == 0:                                      #不合法节点
-                board_ = np.full(16,-1)
-            board_ = np.reshape(board_,(4,4))
-            board_list.append(board_)
-        return board_list
+            placement = -1, -1, self.board
+            if x != 0:                                      #合法节点
+                placement = i, self.num_pool[0], self.board
+            placement_list.append(placement)
+        return placement_list
 
 class Tree:
     def __init__(self):
@@ -145,14 +154,15 @@ class Tree:
                             pool = init_pool,
                             point=-1))
     def backup(self, arr = 0):
+        #print(self.tree[-1].board)
         while True:
             x = self.tree[arr]
             if (x.point == -1 or x.N == self.maxium_visit_count) and np.any(x.V==-1):
-                self.tree = make_leafs(self.tree, self.pool, x, arr)
+                self.make_leafs(x, arr)
                 print("expanded",len(self.tree))
             x.V, x.N0 = search_nodes(self.tree, arr)
-            print(x.point)
-            print(x.N0)
+            #print(x.point)
+            #print(x.N0)
             arr0 = self.tree[arr].backup_calc(self.c_puct)
 
             arr = find_leaf(self.tree, arr, arr0)
@@ -160,17 +170,18 @@ class Tree:
             if self.tree[arr].N < self.maxium_visit_count:
                 break
 
-def make_leafs(Tree, pool, father, point):
-    prop = father.make_leafs_prop()
-    ar = father.ar
-    init_pool = pool[ar:ar+2]
-    for i,x in enumerate(prop):
-        Tree.append(Node(board = x,
-                        pool = init_pool,
-                        point = point,
-                        num = i,
-                        ar = ar+1))
-    return Tree
+    def make_leafs(self, father, point):
+        prop = father.make_leafs_prop()
+        ar = father.ar
+        init_pool = self.pool[ar:ar+2]
+        for i,x in enumerate(prop):
+            self.tree.append(Node(placement = x[:2],
+                            pool = init_pool,
+                            point = point,
+                            num = i,
+                            ar = ar+1,
+                            board = x[2]))
+
 
 def search_nodes(Tree, point):
     V = np.zeros(16)

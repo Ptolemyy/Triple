@@ -11,7 +11,7 @@ num_pool = np.array([1,1])
 def log3(x):
     return np.log(x)/np.log(3)
 def possible_num():
-    n = int(max(0,log3(max(board))-2))
+    n = int(max(0,log3(np.max(board))-2))
     nums = [3**x for x in range(0,n+1)]
     return nums
 def update_pool():
@@ -50,6 +50,7 @@ def search(pos,num):
             board[i[1]] = 0
             place(pos,num*3)
 def place(pos,num):
+    global board
     if board[pos] == 0:
         board[pos] = num 
         search(pos,num)
@@ -61,12 +62,6 @@ def set_board(x):
 def set_pool(x):
     global num_pool
     num_pool = np.copy(x)
-def deep_search():
-    global board
-    for i, x in enumerate(board):
-        if x != 0:
-            search(i, x)
-
 if __name__ == "__main__":
     while True:
         print(np.reshape(board,(4,4)))
