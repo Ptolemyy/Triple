@@ -206,4 +206,7 @@ def find_leaf(Tree, point, num):
 tree = Tree()
 while True:
     tree.backup()
-    print(len(tree.tree))
+    if len(tree.tree) > 1500:
+        pi = tree.tree[0].N0/max(tree.tree[0].N0)
+        print(pi)
+        break
