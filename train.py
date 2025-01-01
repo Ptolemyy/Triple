@@ -69,7 +69,7 @@ class ResNet(nn.Module):
 
 class Node:
     def __init__(self,  pool, board,
-                  point = 0, num = 0, ar=0, placement = np.full(2,-1)):
+                  gp = -1, point = 0, num = 0, ar=0, placement = np.full(2,-1)):
         super(Node,self).__init__()
         self.placement = placement
         self.pool = pool
@@ -80,7 +80,8 @@ class Node:
         self.V = np.full(16,-1)
         self.N0 = []
         self.board = board
-
+        self.gp = gp
+        
         gm.board = np.copy(self.board)
         gm.board = np.reshape(gm.board, 16)
         if placement[0] >= 0:
@@ -175,12 +176,17 @@ class Tree:
         ar = father.ar
         init_pool = self.pool[ar:ar+2]
         for i,x in enumerate(prop):
+            if ar == -1:
+                gp = i
+            else:
+                gp = father.gp
             self.tree.append(Node(placement = x[:2],
                             pool = init_pool,
                             point = point,
                             num = i,
                             ar = ar+1,
-                            board = x[2]))
+                            board = x[2],
+                            gp = gp))
 
 
 def search_nodes(Tree, point):
