@@ -139,7 +139,7 @@ class Node:
         return placement_list
 
 class Tree:
-    def __init__(self):
+    def __init__(self, init_board):
         super(Tree, self).__init__()
         self.tree = []
         self.maxium_visit_count = 3
