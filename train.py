@@ -206,3 +206,4 @@ def find_leaf(Tree, point, num):
 tree = Tree()
 while True:
     tree.backup()
+    print(len(tree.tree))
