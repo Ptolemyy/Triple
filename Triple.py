@@ -33,7 +33,7 @@ def search(pos,num):
     while searching:
         searching = False
         for i in mapping:
-            for j in range(0,4):
+            for _ in range(0,4):
                 N0 = i[0]
                 pos1 = i[1]
                 pos0 = 7+pos1+2*(math.floor((pos1)/4))
