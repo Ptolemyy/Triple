@@ -68,3 +68,5 @@ if __name__ == "__main__":
         print(num_pool)
         pos = int(input())
         place(pos,num_pool[1])
+
+#
