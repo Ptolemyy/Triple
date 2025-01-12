@@ -214,6 +214,13 @@ class Tree:
             f = max(self.tree[f].point, 0)
         return x
 
+    def restart(self, select):
+        temp_tree = []
+        for x in self.tree:
+            if x.gp == select:
+                temp_tree.append(x)
+        self.tree = temp_tree
+
 def search_nodes(Tree, point):
     V = np.zeros(16)
     N = np.zeros(16)
