@@ -234,10 +234,16 @@ resnet = resnet.half()
 tree = Tree(resnet)
 
 temp = time.time()
-while True:
-    tree.backup()
-    if len(tree.tree) > 2000:
-        pi = tree.tree[0].N0/max(tree.tree[0].N0)
-        print(pi)
-        print(time.time()-temp)
-        break
+arr = 0
+for i in range(2):
+    while True:
+        tree.backup(np.copy(arr))
+        N0 = tree.tree[0].N0
+        if  sum(N0) > 100:
+            pi = N0 / max(N0)
+            select_move = np.argmax(pi)
+            tree.restart(select_move)
+            arr = tree.tree[1].point
+
+            print(time.time()-temp)
+            break
