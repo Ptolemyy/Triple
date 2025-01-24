@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import numpy as np
-from torch.nn import Sequential,Conv2d,Linear,MaxPool2d,Flatten,ReLU,AvgPool2d,Sigmoid,BatchNorm1d
+from torch.nn import Sequential,Conv2d,Linear,Flatten,ReLU,Sigmoid,BatchNorm1d
 import Triple as gm
 import time
 
@@ -81,8 +81,8 @@ class ResNet(nn.Module):
         return p, v
 
 class Node:
-    def __init__(self,  pool, board, feather_planes,resnet,
-                  gp = -1, point = 0, num = 0, ar=0, placement = np.full(2,-1)):
+    def __init__(self,  pool, board, feather_planes, resnet,
+                  gp = -1, point = 0, num = 0, ar = 0, placement = np.full(2,-1)):
         super(Node,self).__init__()
         self.placement = placement
         self.pool = pool
@@ -94,13 +94,14 @@ class Node:
         self.N0 = []
         self.board = board
         self.gp = gp
-        feather_planes = torch.tensor(feather_planes)
+        self.order = time.time()
+        self.feather_planes = feather_planes
 
         gm.board = np.copy(self.board)
         gm.board = np.reshape(gm.board, 16)
         if placement[0] >= 0:
             gm.place(placement[0], placement[1])
-        if np.any(placement == -2):
+        if placement[0] == -2:
             gm.board = np.full(16, -1)
         self.board = np.copy(gm.board)
         self.board = np.reshape(self.board, (4, 4))
@@ -119,17 +120,18 @@ class Node:
             self.input = input.to(torch.float16)
             input = input.cuda()
             feather_planes = feather_planes.cuda()
-            r_input = torch.cat((input, feather_planes),0)
-            r_input = r_input.to(torch.float16)
+            self.r_input = torch.cat((input, feather_planes),0)
+            self.r_input = self.r_input.to(torch.float16)
 
             with torch.no_grad():
 
-                self.output = resnet(r_input)
+                self.output = resnet(self.r_input)
                 self.P, self.V0 = self.output
                 self.P = self.P.cpu()
                 self.V0 = self.V0.cpu()
         else:
             self.V0 = 0
+            self.P = torch.zeros(16)
     def backup_calc(self, c):
         self.N_s = np.sum(self.N0)
         self.V = np.array(self.V)
@@ -146,7 +148,7 @@ class Node:
         placement_list = []
         self.P = self.P * raw_sliced                        #不合法节点
         for i,x in enumerate(raw_sliced):
-            placement = -1, -1, self.board
+            placement = -2, -2, self.board
             if x != 0:                                      #合法节点
                 placement = i, self.num_pool[0], self.board
             placement_list.append(placement)
@@ -165,54 +167,55 @@ class Tree:
                         [0,81,0,0],
                         [0,0,0,0]],dtype=np.float16)
         init_pool = self.pool[:2]
+        feather_planes = np.full((7,6,6),np.zeros((6,6)))
+        feather_planes = torch.tensor(feather_planes)
+
         self.tree.append(Node(board = init_board,
                             pool = init_pool,
                             point=-1,
-                            feather_planes=np.full((7,6,6),np.zeros((6,6))),
+                            feather_planes = feather_planes,
                             resnet = resnet
                             ))
 
-    def backup(self, arr = 0):
+    def backup(self):
         #print(self.tree[-1].board)
+        x = self.tree[0]
+        j = x.order
         while True:
-            x = self.tree[arr]
-            if (x.point == -1 or x.N == self.maximum_visit_count) and np.any(x.V==-1):
-                self.make_leafs(x, arr)
+            if ((x.point == -1 or x.N == self.maximum_visit_count)
+                    and np.any(x.V == -1) and np.any(x.board != -1)):
+                self.make_leafs(x, j)
                 print("expanded",len(self.tree))
-            x.V, x.N0 = search_nodes(self.tree, arr)
+            x.V, x.N0 = self.search_nodes(j)
+            #print(x.N0,x.N)
             #print(x.point)
             #print(x.N0)
-            arr0 = self.tree[arr].backup_calc(self.c_puct)
-
-            arr = find_leaf(self.tree, arr, arr0)
-            self.tree[arr].N += 1
-            if self.tree[arr].N < self.maximum_visit_count:
+            if np.any(x.board != -1):
+                arr0 = x.backup_calc(self.c_puct)
+                j0 = self.find_leaf(j, arr0)
+                x = self.tree[j0]
+            j = x.order
+            x.N += 1
+            if (x.N < self.maximum_visit_count
+                    or np.any(x.board == -1)):
                 break
 
     def make_leafs(self, father, point):
         prop = father.make_leafs_prop()
         ar = father.ar
         init_pool = self.pool[ar:ar+2]
-        feather_planes = self.feather_planes(point)
+        feather_planes = father.r_input[1:]
         for i,x in enumerate(prop):
-            gp = i if ar == -1 else father.gp
+            gp = i if ar == 0 else np.copy(father.gp)
             self.tree.append(Node(placement = x[:2],
                             pool = init_pool,
                             point = point,
                             num = i,
-                            ar = ar+1,
+                            ar = ar + 1,
                             board = x[2],
                             gp = gp,
                             feather_planes = feather_planes,
                             resnet = resnet))
-
-    def feather_planes(self, f):
-        x = torch.tensor([])
-        for _ in range(7):
-            Xi = self.tree[f].input
-            x = torch.cat((x, Xi if f != -1 else torch.zeros((6,6))), 0)
-            f = max(self.tree[f].point, 0)
-        return x
 
     def restart(self, select):
         temp_tree = []
@@ -221,19 +224,19 @@ class Tree:
                 temp_tree.append(x)
         self.tree = temp_tree
 
-def search_nodes(Tree, point):
-    V = np.zeros(16)
-    N = np.zeros(16)
-    for i in Tree:
-        if i.point == point and np.any(i.board!=-1):        #查找所有合法叶节点
-            V[i.num] = i.V0
-            N[i.num] = i.N
-    return V, N
+    def search_nodes(self, point):
+        V = np.zeros(16)
+        N = np.zeros(16)
+        for i in self.tree:
+            if i.point == point and np.any(i.board!=-1):        #查找所有合法叶节点
+                V[i.num] = i.V0
+                N[i.num] = i.N
+        return V, N
 
-def find_leaf(Tree, point, num):
-    for i, x in enumerate(Tree):
-        if x.point == point and x.num == num:
-            return i
+    def find_leaf(self, point, num):
+        for i, x in enumerate(self.tree):
+            if x.point == point and x.num == num:
+                return i
 
 resnet = ResNet()
 resnet = resnet.cuda()
@@ -241,16 +244,13 @@ resnet = resnet.half()
 tree = Tree(resnet)
 
 temp = time.time()
-arr = 0
 for i in range(2):
     while True:
-        tree.backup(np.copy(arr))
+        tree.backup()
         N0 = tree.tree[0].N0
         if  sum(N0) > 100:
             pi = N0 / max(N0)
             select_move = np.argmax(pi)
             tree.restart(select_move)
-            arr = tree.tree[1].point
-
             print(time.time()-temp)
             break
