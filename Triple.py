@@ -9,15 +9,18 @@ board = np.reshape(board,16)
 num_pool = np.array([1,1])
 
 def log3(x):
-    return np.log(x)/np.log(3)
+    f = np.log(x)/np.log(3) if x > 0 else 0
+    return f
 def possible_num():
     n = int(max(0,log3(np.max(board))-2))
     nums = [3**x for x in range(0,n+1)]
     return nums
+
 def update_pool():
     num = possible_num()
     num_pool[1] = np.copy(num_pool[0])
     num_pool[0] = np.copy(num[random.randint(0,len(num)-1)])
+
 def search(pos,num):
     mapping = []
     fdirect = [-6,+1,+6,-1]
@@ -55,13 +58,16 @@ def place(pos,num):
         board[pos] = num 
         search(pos,num)
         update_pool()
+
 def set_board(x):
     global board
     board = np.copy(x)
     board = np.reshape(board,16)
+
 def set_pool(x):
     global num_pool
     num_pool = np.copy(x)
+
 if __name__ == "__main__":
     while True:
         print(np.reshape(board,(4,4)))

@@ -1,9 +1,13 @@
 import torch
 from torch import nn
 import numpy as np
-from torch.nn import Sequential,Conv2d,Linear,Flatten,ReLU,Sigmoid,BatchNorm1d
+from torch.nn import Sequential,Conv2d,Linear,Flatten,ReLU,Sigmoid,BatchNorm1d,L1Loss
+from torch.utils.data import Dataset, DataLoader
+from torch.optim import SGD
 import Triple as gm
 import time
+import tqdm
+import json, os
 
 class BasicNet(nn.Module):
     def __init__(self, channel):
@@ -78,11 +82,11 @@ class ResNet(nn.Module):
         x = self.net(x)
         p = self.policy(x)
         v = self.value(x)
-        return p, v
+        return torch.cat([p, v], 0)
 
 class Node:
     def __init__(self,  pool, board, feather_planes, resnet,
-                  gp = -1, point = 0, num = 0, ar = 0, placement = np.full(2,-1)):
+                point = 0, num = 0, ar = 0, placement = np.full(2,-1)):
         super(Node,self).__init__()
         self.placement = placement
         self.pool = pool
@@ -91,10 +95,10 @@ class Node:
         self.N = 0
         self.num = num
         self.V = np.full(16,-1)
-        self.N0 = []
+        self.N0 = np.array([])
         self.board = board
-        self.gp = gp
         self.order = time.time()
+        self.order += 100000 * np.random.random()
         self.feather_planes = feather_planes
 
         gm.board = np.copy(self.board)
@@ -122,11 +126,11 @@ class Node:
             feather_planes = feather_planes.cuda()
             self.r_input = torch.cat((input, feather_planes),0)
             self.r_input = self.r_input.to(torch.float16)
-
             with torch.no_grad():
 
                 self.output = resnet(self.r_input)
-                self.P, self.V0 = self.output
+                self.P = self.output[:-1]
+                self.V0 = self.output[-1]
                 self.P = self.P.cpu()
                 self.V0 = self.V0.cpu()
         else:
@@ -164,7 +168,7 @@ class Tree:
         self.pool = np.random.randint(10,99,3000)
         init_board = np.array([[0,0,0,0],
                         [0,0,0,0],
-                        [0,81,0,0],
+                        [0,0,0,0],
                         [0,0,0,0]],dtype=np.float16)
         init_pool = self.pool[:2]
         feather_planes = np.full((7,6,6),np.zeros((6,6)))
@@ -185,7 +189,6 @@ class Tree:
             if ((x.point == -1 or x.N == self.maximum_visit_count)
                     and np.any(x.V == -1) and np.any(x.board != -1)):
                 self.make_leafs(x, j)
-                print("expanded",len(self.tree))
             x.V, x.N0 = self.search_nodes(j)
             #print(x.N0,x.N)
             #print(x.point)
@@ -204,24 +207,30 @@ class Tree:
         prop = father.make_leafs_prop()
         ar = father.ar
         init_pool = self.pool[ar:ar+2]
-        feather_planes = father.r_input[1:]
+        feather_planes = father.r_input[:-1]
         for i,x in enumerate(prop):
-            gp = i if ar == 0 else np.copy(father.gp)
             self.tree.append(Node(placement = x[:2],
                             pool = init_pool,
                             point = point,
                             num = i,
                             ar = ar + 1,
                             board = x[2],
-                            gp = gp,
                             feather_planes = feather_planes,
                             resnet = resnet))
 
     def restart(self, select):
         temp_tree = []
-        for x in self.tree:
-            if x.gp == select:
-                temp_tree.append(x)
+        list0 = [self.tree[select+1].order]
+        while True:
+            for i,x in enumerate(list0):
+                if x != 0:
+                    new_list = [y.order for y in self.tree if y.point == x]
+                    list0[i] = 0
+                    list0 += new_list
+                    node0 = [y for y in self.tree if y.order == x]
+                    temp_tree.append(node0[0])
+            if not any(list0):
+                break
         self.tree = temp_tree
 
     def search_nodes(self, point):
@@ -238,19 +247,124 @@ class Tree:
             if x.point == point and x.num == num:
                 return i
 
-resnet = ResNet()
-resnet = resnet.cuda()
-resnet = resnet.half()
-tree = Tree(resnet)
 
-temp = time.time()
-for i in range(2):
+def single_move(saved, title):
+    total_visit_count = 700
+
+    p_bar = tqdm.tqdm(total=total_visit_count - saved, desc=title)
+
     while True:
-        tree.backup()
         N0 = tree.tree[0].N0
-        if  sum(N0) > 100:
+        tree.backup()
+        p_bar.update(1)
+        p_bar.refresh()
+
+        if  sum(N0) > total_visit_count:
             pi = N0 / max(N0)
             select_move = np.argmax(pi)
             tree.restart(select_move)
-            print(time.time()-temp)
+            p_bar.close()
+            return sum(tree.tree[0].N0)
+
+def self_play(title):
+    saved_move = 0
+    self_play_dict = []
+
+    while True:
+        tree_root = tree.tree[0]
+        bd = tree_root.board
+        if not np.any(bd==0):
             break
+        saved_move = single_move(saved_move, title)
+        pi = tree_root.N0 / max(tree_root.N0)
+        dict0 = {"board": tree_root.r_input.tolist(), "Pi": pi.tolist(), "P": 0}
+        self_play_dict.append(dict0)
+
+    for i, x in enumerate(self_play_dict):
+        x["P"] = len(self_play_dict) - i
+
+    name = time.asctime().replace(" ", "_")
+    name = name.replace(":", "_")
+    with open("data/" + name + ".json", 'w') as f:
+        f.write(json.dumps(self_play_dict, indent=4))
+
+    return len(self_play_dict)
+
+def get_data():
+    data = []
+    with open("data/log.json","r") as f:
+        log = json.loads(f.read())
+    entries = os.listdir("data")
+    for i in entries:
+        if (not i in log) and i != "log.json":
+            log.append(i)
+            with open("data/" + i, "r") as f:
+                data += json.loads(f.read())
+    with open("data/log.json", 'w') as f:
+        f.write(json.dumps(log))
+
+    return data
+
+class TripleDataset(Dataset):
+    def __init__(self):
+        self.data = get_data()
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        img = self.data[idx]["board"]
+        img = torch.tensor(img,dtype=torch.float16)
+        target_pi = self.data[idx]["Pi"]
+        target_pi = torch.tensor(target_pi,dtype=torch.float16)
+        target_p = 1/self.data[idx]["P"]
+        target_p = torch.tensor([target_p],dtype=torch.float16)
+        outputs = torch.cat((target_pi,target_p),dim=0)
+        return img, outputs
+
+def train():
+    dataloader = DataLoader(batch_size=1, shuffle=True, dataset=TripleDataset())
+    loss = L1Loss()
+    loss.cuda()
+    optim = SGD(resnet.parameters(), lr=0.005)
+
+    for data in dataloader:
+        img, target = data
+        img = img[0].cuda()
+        target = target[0].cuda()
+        outputs = resnet(img)
+
+        result_loss = loss(outputs, target)
+        optim.zero_grad()
+        result_loss.backward()
+        optim.step()
+        print(result_loss.item())
+
+if __name__ == "__main__":
+    model_name = "demo"
+    model_path = "model/"
+    stat_path = "stat/"
+    self_play_count = 5
+
+    with open(stat_path + model_name + ".json", 'r') as f:
+        mean_move_list = json.loads(f.read())
+
+    while True:
+        resnet = ResNet()
+        if model_name + ".pt" in os.listdir(model_path):
+            print(model_name+ " has been loaded")
+            resnet.load_state_dict(torch.load(model_path + model_name + ".pt"))
+        resnet = resnet.cuda()
+        resnet = resnet.half()
+
+        move_sum = 0
+        for i in range(self_play_count):
+            tree = Tree(resnet)
+            move_sum += self_play("self_play_count:" + str(i))
+        mean_move_list.append(move_sum / self_play_count)
+
+        with open(stat_path + model_name + ".json", 'w') as f:
+            f.write(json.dumps(mean_move_list))
+
+        train()
+        torch.save(resnet.state_dict(),model_path + model_name + ".pt")
