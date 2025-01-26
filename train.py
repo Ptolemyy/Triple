@@ -1,14 +1,14 @@
 import torch
 from torch import nn
 import numpy as np
-from torch.nn import Sequential,Conv2d,Linear,Flatten,ReLU,Sigmoid,BatchNorm1d,L1Loss
+from torch.nn import Sequential,Conv2d,Linear,Flatten,ReLU,Sigmoid,BatchNorm1d,MSELoss,CrossEntropyLoss
 from torch.utils.data import Dataset, DataLoader
-from torch.optim import SGD
+from torch.optim import SGD, Adam
 import Triple as gm
 import time
 import tqdm
 import json, os
-
+np
 class BasicNet(nn.Module):
     def __init__(self, channel):
         super(BasicNet, self).__init__()
@@ -37,6 +37,7 @@ class policy_head(nn.Module):
             ReLU(),
             Flatten(0),
             Linear(2 * 36, 16),
+            Sigmoid()
         )
     def forward(self, x):
         x = self.net(x)
@@ -82,10 +83,11 @@ class ResNet(nn.Module):
         x = self.net(x)
         p = self.policy(x)
         v = self.value(x)
-        return torch.cat([p, v], 0)
+        output = torch.cat((p, v), 0)
+        return output
 
 class Node:
-    def __init__(self,  pool, board, feather_planes, resnet,
+    def __init__(self,  pool, board, feather_planes, resnet, epsi = 0.25,
                 point = 0, num = 0, ar = 0, placement = np.full(2,-1)):
         super(Node,self).__init__()
         self.placement = placement
@@ -119,7 +121,7 @@ class Node:
             input2 = np.pad(self.num_pool,((0,2)),mode="constant",constant_values=0)
             input2 = np.reshape(input2,(2,2))
             input2 = np.pad(input2,((0,4),(0,4)),mode="constant",constant_values=0)
-            input = torch.tensor(input1 + input2,dtype=torch.float32)
+            input = torch.tensor(input1 + input2,dtype=torch.float16)
             input = torch.reshape(input,(1,6,6))
             self.input = input.to(torch.float16)
             input = input.cuda()
@@ -127,21 +129,22 @@ class Node:
             self.r_input = torch.cat((input, feather_planes),0)
             self.r_input = self.r_input.to(torch.float16)
             with torch.no_grad():
-
                 self.output = resnet(self.r_input)
                 self.P = self.output[:-1]
                 self.V0 = self.output[-1]
                 self.P = self.P.cpu()
+                if ar >= 30:
+                    eta = np.random.dirichlet(self.P, 1)[0]
+                    self.P = (1 - epsi) * self.P + epsi * eta
                 self.V0 = self.V0.cpu()
         else:
-            self.V0 = 0
+            self.V0 = 1
             self.P = torch.zeros(16)
     def backup_calc(self, c):
         self.N_s = np.sum(self.N0)
         self.V = np.array(self.V)
-        self.V = np.where(self.V == 0, np.inf, self.V)
-        self.V = 1/self.V
-        self.Q = self.V/max(self.V)
+        self.V = 1 / self.V
+        self.Q = self.V / max(self.V)
         self.puct = (self.N_s ** 1/2) / (np.ones(16) + self.N0)
         self.U = c * self.P * self.puct
         return torch.argmax(self.U + self.Q)
@@ -163,8 +166,10 @@ class Tree:
         super(Tree, self).__init__()
         self.tree = []
         self.maximum_visit_count = 3
-        self.c_puct = 1
-        
+        self.c_puct = 1.0
+        self.epsi = 0.25
+
+        np.random.seed(int(time.time()))
         self.pool = np.random.randint(10,99,3000)
         init_board = np.array([[0,0,0,0],
                         [0,0,0,0],
@@ -178,10 +183,11 @@ class Tree:
                             pool = init_pool,
                             point=-1,
                             feather_planes = feather_planes,
-                            resnet = resnet
+                            resnet = resnet,
+                            epsi = self.epsi
                             ))
 
-    def backup(self):
+    def expand_and_evaluate(self):
         #print(self.tree[-1].board)
         x = self.tree[0]
         j = x.order
@@ -189,10 +195,7 @@ class Tree:
             if ((x.point == -1 or x.N == self.maximum_visit_count)
                     and np.any(x.V == -1) and np.any(x.board != -1)):
                 self.make_leafs(x, j)
-            x.V, x.N0 = self.search_nodes(j)
-            #print(x.N0,x.N)
-            #print(x.point)
-            #print(x.N0)
+            x.V, x.N0 = self.back_up(j)
             if np.any(x.board != -1):
                 arr0 = x.backup_calc(self.c_puct)
                 j0 = self.find_leaf(j, arr0)
@@ -216,7 +219,8 @@ class Tree:
                             ar = ar + 1,
                             board = x[2],
                             feather_planes = feather_planes,
-                            resnet = resnet))
+                            resnet = resnet,
+                            epsi = self.epsi))
 
     def restart(self, select):
         temp_tree = []
@@ -233,8 +237,8 @@ class Tree:
                 break
         self.tree = temp_tree
 
-    def search_nodes(self, point):
-        V = np.zeros(16)
+    def back_up(self, point):
+        V = np.full(16, 1.0)
         N = np.zeros(16)
         for i in self.tree:
             if i.point == point and np.any(i.board!=-1):        #查找所有合法叶节点
@@ -249,18 +253,20 @@ class Tree:
 
 
 def single_move(saved, title):
-    total_visit_count = 700
+    total_visit_count = 600
 
     p_bar = tqdm.tqdm(total=total_visit_count - saved, desc=title)
 
     while True:
         N0 = tree.tree[0].N0
-        tree.backup()
+        tree.expand_and_evaluate()
         p_bar.update(1)
         p_bar.refresh()
 
         if  sum(N0) > total_visit_count:
-            pi = N0 / max(N0)
+            temp = tree.tree[0].ar + 1 if tree.tree[0].ar < 30 else 1e-10
+            sq_N0 = N0 ** (1 / temp)
+            pi = sq_N0 / sum(sq_N0)
             select_move = np.argmax(pi)
             tree.restart(select_move)
             p_bar.close()
@@ -314,48 +320,60 @@ class TripleDataset(Dataset):
 
     def __getitem__(self, idx):
         img = self.data[idx]["board"]
-        img = torch.tensor(img,dtype=torch.float16)
+        img = torch.tensor(img,dtype=torch.float32)
         target_pi = self.data[idx]["Pi"]
-        target_pi = torch.tensor(target_pi,dtype=torch.float16)
-        target_p = 1/self.data[idx]["P"]
-        target_p = torch.tensor([target_p],dtype=torch.float16)
-        outputs = torch.cat((target_pi,target_p),dim=0)
-        return img, outputs
+        target_pi = torch.tensor(target_pi,dtype=torch.float32)
+        target_p = self.data[idx]["P"]
+        target_p = torch.tensor([target_p],dtype=torch.float32)
+        target_p = 1 / target_p
+        target = torch.cat((target_pi, target_p), dim=0)
+        return img, target
 
 def train():
     dataloader = DataLoader(batch_size=1, shuffle=True, dataset=TripleDataset())
-    loss = L1Loss()
-    loss.cuda()
-    optim = SGD(resnet.parameters(), lr=0.005)
+    loss1 = MSELoss()
+    loss2 = CrossEntropyLoss()
+    loss1.cuda()
+    loss2.cuda()
+    optim = SGD(train_resnet.parameters(), lr=0.005, momentum=0.9, weight_decay=1e-5)
+    #optim = Adam(train_resnet.parameters(), lr=0.001)
+    epochs = 1
+    for epoch in range(epochs):
+        for data in dataloader:
+            img, target = data
+            img = img[0].cuda()
+            target = target[0].cuda()
 
-    for data in dataloader:
-        img, target = data
-        img = img[0].cuda()
-        target = target[0].cuda()
-        outputs = resnet(img)
+            outputs = train_resnet(img)
+            result_loss1 = loss1(outputs[-1], target[-1])
+            result_loss2 = loss2(outputs[:-1], torch.argmax(target[:-1]))
 
-        result_loss = loss(outputs, target)
-        optim.zero_grad()
-        result_loss.backward()
-        optim.step()
-        print(result_loss.item())
+            result_loss = (result_loss1 + result_loss2)
+            optim.zero_grad()
+            result_loss.backward()
+            optim.step()
+            print(result_loss.item(), epoch)
 
 if __name__ == "__main__":
     model_name = "demo"
     model_path = "model/"
     stat_path = "stat/"
-    self_play_count = 5
+    self_play_count = 40
 
     with open(stat_path + model_name + ".json", 'r') as f:
         mean_move_list = json.loads(f.read())
 
     while True:
         resnet = ResNet()
+        train_resnet = ResNet()
         if model_name + ".pt" in os.listdir(model_path):
             print(model_name+ " has been loaded")
+            train_resnet.load_state_dict(torch.load(model_path + model_name + ".pt"))
             resnet.load_state_dict(torch.load(model_path + model_name + ".pt"))
         resnet = resnet.cuda()
+        train_resnet = train_resnet.cuda()
         resnet = resnet.half()
+        train_resnet = train_resnet.to(dtype=torch.float32)
 
         move_sum = 0
         for i in range(self_play_count):
@@ -367,4 +385,4 @@ if __name__ == "__main__":
             f.write(json.dumps(mean_move_list))
 
         train()
-        torch.save(resnet.state_dict(),model_path + model_name + ".pt")
+        torch.save(train_resnet.state_dict(),model_path + model_name + ".pt")
