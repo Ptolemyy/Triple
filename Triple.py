@@ -3,7 +3,7 @@ import random
 import math
 board = np.array([[0,0,0,0],
                  [0,0,0,0],
-                 [0,27,0,0],
+                 [0,0,0,0],
                  [0,0,0,0]])
 board = np.reshape(board,16)
 num_pool = np.array([1,1])

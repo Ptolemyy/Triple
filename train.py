@@ -1,14 +1,14 @@
 import torch
 from torch import nn
 import numpy as np
-from torch.nn import Sequential,Conv2d,Linear,Flatten,ReLU,Sigmoid,BatchNorm1d,MSELoss,CrossEntropyLoss
+from torch.nn import Sequential,Conv2d,Linear,Flatten,ReLU,Sigmoid,BatchNorm1d,MSELoss,CrossEntropyLoss,Softmax
 from torch.utils.data import Dataset, DataLoader
-from torch.optim import SGD, Adam
+from torch.optim import SGD
 import Triple as gm
 import time
 import tqdm
-import json, os
-np
+import json, os, argparse
+
 class BasicNet(nn.Module):
     def __init__(self, channel):
         super(BasicNet, self).__init__()
@@ -37,7 +37,7 @@ class policy_head(nn.Module):
             ReLU(),
             Flatten(0),
             Linear(2 * 36, 16),
-            Sigmoid()
+            Softmax(0)
         )
     def forward(self, x):
         x = self.net(x)
@@ -73,8 +73,8 @@ class ResNet(nn.Module):
         self.value = value_head(256)
     def residual_block(self):
         block = []
-        len = 20
-        for _ in range(0, len - 1):
+        length = 20
+        for _ in range(0, length - 1):
             block.append(BasicNet(256))
         return Sequential(*block)
 
@@ -90,7 +90,7 @@ class Node:
     def __init__(self,  pool, board, feather_planes, resnet, epsi = 0.25,
                 point = 0, num = 0, ar = 0, placement = np.full(2,-1)):
         super(Node,self).__init__()
-        self.placement = placement
+        self.placement = placement 
         self.pool = pool
         self.point = point
         self.ar = ar
@@ -105,16 +105,17 @@ class Node:
 
         gm.board = np.copy(self.board)
         gm.board = np.reshape(gm.board, 16)
+
+        possible_num = gm.possible_num()
+        self.num_pool = np.array([possible_num[x % len(possible_num)] for x in pool])
+        gm.set_pool = self.num_pool
+
         if placement[0] >= 0:
             gm.place(placement[0], placement[1])
         if placement[0] == -2:
             gm.board = np.full(16, -1)
         self.board = np.copy(gm.board)
         self.board = np.reshape(self.board, (4, 4))
-
-        possible_num = gm.possible_num()
-        self.num_pool = np.array([possible_num[x % len(possible_num)] for x in pool])
-        gm.set_pool = self.num_pool
 
         if np.any(self.board!=-1):
             input1 = np.pad(self.board,pad_width=1,mode="constant",constant_values=0)
@@ -134,11 +135,14 @@ class Node:
                 self.V0 = self.output[-1]
                 self.P = self.P.cpu()
                 if ar >= 30:
-                    eta = np.random.dirichlet(self.P, 1)[0]
+                    np.dtype = np.float16
+                    alpha = np.full(16, 0.03)
+                    eta = np.random.dirichlet(alpha, 1)[0]
                     self.P = (1 - epsi) * self.P + epsi * eta
+                    self.P = torch.tensor(self.P)
                 self.V0 = self.V0.cpu()
         else:
-            self.V0 = 1
+            self.V0 = torch.inf
             self.P = torch.zeros(16)
     def backup_calc(self, c):
         self.N_s = np.sum(self.N0)
@@ -162,12 +166,13 @@ class Node:
         return placement_list
 
 class Tree:
-    def __init__(self,resnet):
+    def __init__(self,resnet, maximum_visit_count, c_puct, epsi):
         super(Tree, self).__init__()
         self.tree = []
-        self.maximum_visit_count = 3
-        self.c_puct = 1.0
-        self.epsi = 0.25
+        self.resnet = resnet
+        self.maximum_visit_count = maximum_visit_count
+        self.c_puct = c_puct
+        self.epsi = epsi
 
         np.random.seed(int(time.time()))
         self.pool = np.random.randint(10,99,3000)
@@ -183,7 +188,7 @@ class Tree:
                             pool = init_pool,
                             point=-1,
                             feather_planes = feather_planes,
-                            resnet = resnet,
+                            resnet = self.resnet,
                             epsi = self.epsi
                             ))
 
@@ -200,8 +205,8 @@ class Tree:
                 arr0 = x.backup_calc(self.c_puct)
                 j0 = self.find_leaf(j, arr0)
                 x = self.tree[j0]
+                x.N += 1
             j = x.order
-            x.N += 1
             if (x.N < self.maximum_visit_count
                     or np.any(x.board == -1)):
                 break
@@ -219,7 +224,7 @@ class Tree:
                             ar = ar + 1,
                             board = x[2],
                             feather_planes = feather_planes,
-                            resnet = resnet,
+                            resnet = self.resnet,
                             epsi = self.epsi))
 
     def restart(self, select):
@@ -238,7 +243,7 @@ class Tree:
         self.tree = temp_tree
 
     def back_up(self, point):
-        V = np.full(16, 1.0)
+        V = np.full(16, torch.inf)
         N = np.zeros(16)
         for i in self.tree:
             if i.point == point and np.any(i.board!=-1):        #查找所有合法叶节点
@@ -251,10 +256,16 @@ class Tree:
             if x.point == point and x.num == num:
                 return i
 
+def select_action(visit_counts, temperature):
+    if temperature == 0:
+        return np.argmax(visit_counts)
+    adjusted_counts = visit_counts ** (1 / temperature)
+    probs = adjusted_counts / np.sum(adjusted_counts)
 
-def single_move(saved, title):
-    total_visit_count = 600
+    action = np.random.choice(len(visit_counts), p=probs)
+    return action
 
+def single_move(saved, title, total_visit_count):
     p_bar = tqdm.tqdm(total=total_visit_count - saved, desc=title)
 
     while True:
@@ -264,15 +275,15 @@ def single_move(saved, title):
         p_bar.refresh()
 
         if  sum(N0) > total_visit_count:
-            temp = tree.tree[0].ar + 1 if tree.tree[0].ar < 30 else 1e-10
-            sq_N0 = N0 ** (1 / temp)
-            pi = sq_N0 / sum(sq_N0)
-            select_move = np.argmax(pi)
+            temp = 1 if tree.tree[0].ar < 30 else 0
+            select_move = select_action(N0, temp)
             tree.restart(select_move)
             p_bar.close()
+            print(N0)
+            print(select_move)
             return sum(tree.tree[0].N0)
 
-def self_play(title):
+def self_play(num, total_visit_count):
     saved_move = 0
     self_play_dict = []
 
@@ -281,20 +292,29 @@ def self_play(title):
         bd = tree_root.board
         if not np.any(bd==0):
             break
-        saved_move = single_move(saved_move, title)
-        pi = tree_root.N0 / max(tree_root.N0)
+        saved_move = single_move(saved_move, "self_play_num:" + str(num), total_visit_count)
+        pi = tree_root.N0 / sum(tree_root.N0)
         dict0 = {"board": tree_root.r_input.tolist(), "Pi": pi.tolist(), "P": 0}
         self_play_dict.append(dict0)
-
     for i, x in enumerate(self_play_dict):
         x["P"] = len(self_play_dict) - i
-
     name = time.asctime().replace(" ", "_")
     name = name.replace(":", "_")
+    name += "of_model_" + str(num)
     with open("data/" + name + ".json", 'w') as f:
-        f.write(json.dumps(self_play_dict, indent=4))
-
+        f.write(json.dumps(self_play_dict, indent = 4))
     return len(self_play_dict)
+
+def remove_duplicates(raw):
+    data = []
+    hashmap = []
+    for i in raw:
+        board = str(i["board"])
+        board_hash = hash(board)
+        if board_hash not in hashmap:
+            data.append(i)
+            hashmap.append(board_hash)
+    return data
 
 def get_data():
     data = []
@@ -308,7 +328,7 @@ def get_data():
                 data += json.loads(f.read())
     with open("data/log.json", 'w') as f:
         f.write(json.dumps(log))
-
+    data = remove_duplicates(data)
     return data
 
 class TripleDataset(Dataset):
@@ -329,17 +349,17 @@ class TripleDataset(Dataset):
         target = torch.cat((target_pi, target_p), dim=0)
         return img, target
 
-def train():
-    dataloader = DataLoader(batch_size=1, shuffle=True, dataset=TripleDataset())
+def train(dataset0, num):
+    dataloader = DataLoader(batch_size=1, shuffle=True, dataset=dataset0)
     loss1 = MSELoss()
     loss2 = CrossEntropyLoss()
     loss1.cuda()
     loss2.cuda()
-    optim = SGD(train_resnet.parameters(), lr=0.005, momentum=0.9, weight_decay=1e-5)
+    optim = SGD(train_resnet.parameters(), lr=0.005, momentum=0.9, weight_decay=1e-4)
     #optim = Adam(train_resnet.parameters(), lr=0.001)
     epochs = 1
     for epoch in range(epochs):
-        for data in dataloader:
+        for data in tqdm.tqdm(dataloader):
             img, target = data
             img = img[0].cuda()
             target = target[0].cuda()
@@ -352,37 +372,70 @@ def train():
             optim.zero_grad()
             result_loss.backward()
             optim.step()
-            print(result_loss.item(), epoch)
 
 if __name__ == "__main__":
     model_name = "demo"
     model_path = "model/"
     stat_path = "stat/"
-    self_play_count = 40
+    MAXIMUM_VISIT_COUNT = 3
+    C_PUCT = 1.0
+    EPSI = 0.25
+    TOTAL_VISIT_COUNT = 600
 
-    with open(stat_path + model_name + ".json", 'r') as f:
-        mean_move_list = json.loads(f.read())
-
-    while True:
+    dirlist = os.listdir(stat_path)
+    parser = argparse.ArgumentParser(description='Monte Carlo Tree Search Example')
+    parser.add_argument('--mode', type=str, default='diverse_play')
+    parser.add_argument('--selection', type=int, default = 0)
+    args = parser.parse_args()
+    all_data_num = [int(x.replace('demo','').replace('.json','')) for x in dirlist]
+    latest_num = max(all_data_num)
+    if args.mode == 'diverse_play':
+        index = latest_num
+        while True:#predict
+            index += 1
+            resnet = ResNet()
+            if model_name + str(index) + ".json" not in dirlist:
+                with open(stat_path + model_name + str(index) + ".json", 'w') as f:
+                    f.write(json.dumps([]))
+                torch.save(resnet.state_dict(), model_path + model_name + str(index) + ".pt")
+            with open(stat_path + model_name + str(index) + ".json", 'r') as f:
+                move_steps_list = json.loads(f.read())
+            if model_name + str(index) + ".pt" in os.listdir(model_path):
+                print(model_name + str(index) + " has been loaded")
+                resnet.load_state_dict(torch.load(model_path + model_name + str(index) + ".pt"))
+            resnet = resnet.cuda()
+            resnet = resnet.half()
+            tree = Tree(resnet, maximum_visit_count = MAXIMUM_VISIT_COUNT, c_puct = C_PUCT, epsi = EPSI)
+            move_steps = self_play(index, TOTAL_VISIT_COUNT)
+            move_steps_list.append(move_steps)
+            with open(stat_path + model_name + str(index) + ".json", 'w') as f:
+                f.write(json.dumps(move_steps_list))
+    if args.mode == 'single_play':
+        index = args.selection
         resnet = ResNet()
+        if model_name + str(index) + ".json" not in dirlist:
+            with open(stat_path + model_name + str(index) + ".json", 'w') as f:
+                f.write(json.dumps([]))
+            torch.save(resnet.state_dict(), model_path + model_name + str(index) + ".pt")
+        while True:
+            with open(stat_path + model_name + str(index) + ".json", 'r') as f:
+                move_steps_list = json.loads(f.read())
+            if model_name + str(index) + ".pt" in os.listdir(model_path):
+                print(model_name + str(index) + " has been loaded")
+                resnet.load_state_dict(torch.load(model_path + model_name + str(index) + ".pt"))
+            resnet = resnet.cuda()
+            resnet = resnet.half()
+            tree = Tree(resnet, maximum_visit_count=MAXIMUM_VISIT_COUNT, c_puct=C_PUCT, epsi=EPSI)
+            move_steps = self_play(index, TOTAL_VISIT_COUNT)
+            move_steps_list.append(move_steps)
+            with open(stat_path + model_name + str(index) + ".json", 'w') as f:
+                f.write(json.dumps(move_steps_list))
+    if args.mode == 'train':
+        index = args.selection
+        dataset = TripleDataset()
         train_resnet = ResNet()
-        if model_name + ".pt" in os.listdir(model_path):
-            print(model_name+ " has been loaded")
-            train_resnet.load_state_dict(torch.load(model_path + model_name + ".pt"))
-            resnet.load_state_dict(torch.load(model_path + model_name + ".pt"))
-        resnet = resnet.cuda()
+        train_resnet.load_state_dict(torch.load(model_path + model_name + str(index) + ".pt"))
         train_resnet = train_resnet.cuda()
-        resnet = resnet.half()
         train_resnet = train_resnet.to(dtype=torch.float32)
-
-        move_sum = 0
-        for i in range(self_play_count):
-            tree = Tree(resnet)
-            move_sum += self_play("self_play_count:" + str(i))
-        mean_move_list.append(move_sum / self_play_count)
-
-        with open(stat_path + model_name + ".json", 'w') as f:
-            f.write(json.dumps(mean_move_list))
-
-        train()
-        torch.save(train_resnet.state_dict(),model_path + model_name + ".pt")
+        train(dataset, index)
+        torch.save(train_resnet.state_dict(),model_path + model_name + str(index) + ".pt")
