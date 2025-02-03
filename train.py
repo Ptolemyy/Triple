@@ -4,7 +4,7 @@ import numpy as np
 from torch.nn import Sequential,Conv2d,Linear,Flatten,ReLU,Sigmoid,BatchNorm1d,MSELoss,CrossEntropyLoss,Softmax
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import SGD
-import Triple as gm
+from Triple import Triple
 import time
 import tqdm
 import json, os, argparse
@@ -90,7 +90,7 @@ class Node:
     def __init__(self,  pool, board, feather_planes, resnet, epsi = 0.25,
                 point = 0, num = 0, ar = 0, placement = np.full(2,-1)):
         super(Node,self).__init__()
-        self.placement = placement 
+        self.placement = placement
         self.pool = pool
         self.point = point
         self.ar = ar
@@ -102,13 +102,10 @@ class Node:
         self.order = time.time()
         self.order += 100000 * np.random.random()
         self.feather_planes = feather_planes
+        gm = Triple()
 
         gm.board = np.copy(self.board)
         gm.board = np.reshape(gm.board, 16)
-
-        possible_num = gm.possible_num()
-        self.num_pool = np.array([possible_num[x % len(possible_num)] for x in pool])
-        gm.set_pool = self.num_pool
 
         if placement[0] >= 0:
             gm.place(placement[0], placement[1])
@@ -117,9 +114,11 @@ class Node:
         self.board = np.copy(gm.board)
         self.board = np.reshape(self.board, (4, 4))
 
+        possible_num = gm.possible_num()
+        self.num_pool = np.array([possible_num[x % len(possible_num)] for x in pool])
         if np.any(self.board!=-1):
             input1 = np.pad(self.board,pad_width=1,mode="constant",constant_values=0)
-            input2 = np.pad(self.num_pool,((0,2)),mode="constant",constant_values=0)
+            input2 = np.pad(self.num_pool,(0, 2),mode="constant",constant_values=0)
             input2 = np.reshape(input2,(2,2))
             input2 = np.pad(input2,((0,4),(0,4)),mode="constant",constant_values=0)
             input = torch.tensor(input1 + input2,dtype=torch.float16)
@@ -178,7 +177,7 @@ class Tree:
         self.pool = np.random.randint(10,99,3000)
         init_board = np.array([[0,0,0,0],
                         [0,0,0,0],
-                        [0,0,0,0],
+                        [0,0,27,0],
                         [0,0,0,0]],dtype=np.float16)
         init_pool = self.pool[:2]
         feather_planes = np.full((7,6,6),np.zeros((6,6)))
@@ -196,6 +195,7 @@ class Tree:
         #print(self.tree[-1].board)
         x = self.tree[0]
         j = x.order
+        x.point = -1
         while True:
             if ((x.point == -1 or x.N == self.maximum_visit_count)
                     and np.any(x.V == -1) and np.any(x.board != -1)):
@@ -267,7 +267,6 @@ def select_action(visit_counts, temperature):
 
 def single_move(saved, title, total_visit_count):
     p_bar = tqdm.tqdm(total=total_visit_count - saved, desc=title)
-
     while True:
         N0 = tree.tree[0].N0
         tree.expand_and_evaluate()
@@ -279,8 +278,6 @@ def single_move(saved, title, total_visit_count):
             select_move = select_action(N0, temp)
             tree.restart(select_move)
             p_bar.close()
-            print(N0)
-            print(select_move)
             return sum(tree.tree[0].N0)
 
 def self_play(num, total_visit_count):
