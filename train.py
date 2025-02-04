@@ -87,7 +87,7 @@ class ResNet(nn.Module):
         return output
 
 class Node:
-    def __init__(self,  pool, board, feather_planes, resnet, epsi = 0.25,
+    def __init__(self,  pool, board, feather_planes, resnet, visitcount, epsi = 0.25,
                 point = 0, num = 0, ar = 0, placement = np.full(2,-1)):
         super(Node,self).__init__()
         self.placement = placement
@@ -140,14 +140,15 @@ class Node:
                     self.P = (1 - epsi) * self.P + epsi * eta
                     self.P = torch.tensor(self.P)
                 self.V0 = self.V0.cpu()
+                self.V0 = 1 / self.V0
         else:
-            self.V0 = torch.inf
+            self.V0 = 0
             self.P = torch.zeros(16)
+        self.V0s = np.full(visitcount, self.V0)
     def backup_calc(self, c):
         self.N_s = np.sum(self.N0)
-        self.V = np.array(self.V)
-        self.V = 1 / self.V
-        self.Q = self.V / max(self.V)
+        self.Q1 = self.V / self.N
+        self.Q = self.Q1 / max(self.Q1)
         self.puct = (self.N_s ** 1/2) / (np.ones(16) + self.N0)
         self.U = c * self.P * self.puct
         return torch.argmax(self.U + self.Q)
@@ -177,7 +178,7 @@ class Tree:
         self.pool = np.random.randint(10,99,3000)
         init_board = np.array([[0,0,0,0],
                         [0,0,0,0],
-                        [0,0,27,0],
+                        [0,0,0,0],
                         [0,0,0,0]],dtype=np.float16)
         init_pool = self.pool[:2]
         feather_planes = np.full((7,6,6),np.zeros((6,6)))
@@ -188,7 +189,8 @@ class Tree:
                             point=-1,
                             feather_planes = feather_planes,
                             resnet = self.resnet,
-                            epsi = self.epsi
+                            epsi = self.epsi,
+                            visitcount = self.maximum_visit_count
                             ))
 
     def expand_and_evaluate(self):
@@ -204,6 +206,7 @@ class Tree:
             if np.any(x.board != -1):
                 arr0 = x.backup_calc(self.c_puct)
                 j0 = self.find_leaf(j, arr0)
+                x.V0s = np.append(x.V0s, self.tree[j0].V0)
                 x = self.tree[j0]
                 x.N += 1
             j = x.order
@@ -225,7 +228,8 @@ class Tree:
                             board = x[2],
                             feather_planes = feather_planes,
                             resnet = self.resnet,
-                            epsi = self.epsi))
+                            epsi = self.epsi,
+                            visitcount=self.maximum_visit_count))
 
     def restart(self, select):
         temp_tree = []
@@ -243,11 +247,11 @@ class Tree:
         self.tree = temp_tree
 
     def back_up(self, point):
-        V = np.full(16, torch.inf)
+        V = np.zeros(16)
         N = np.zeros(16)
         for i in self.tree:
             if i.point == point and np.any(i.board!=-1):        #查找所有合法叶节点
-                V[i.num] = i.V0
+                V[i.num] = np.sum(i.V0s)
                 N[i.num] = i.N
         return V, N
 
@@ -346,7 +350,7 @@ class TripleDataset(Dataset):
         target = torch.cat((target_pi, target_p), dim=0)
         return img, target
 
-def train(dataset0, num):
+def train(dataset0):
     dataloader = DataLoader(batch_size=1, shuffle=True, dataset=dataset0)
     loss1 = MSELoss()
     loss2 = CrossEntropyLoss()
@@ -374,10 +378,10 @@ if __name__ == "__main__":
     model_name = "demo"
     model_path = "model/"
     stat_path = "stat/"
-    MAXIMUM_VISIT_COUNT = 3
+    MAXIMUM_VISIT_COUNT = 5
     C_PUCT = 1.0
     EPSI = 0.25
-    TOTAL_VISIT_COUNT = 600
+    TOTAL_VISIT_COUNT = 800
 
     dirlist = os.listdir(stat_path)
     parser = argparse.ArgumentParser(description='Monte Carlo Tree Search Example')
@@ -434,5 +438,5 @@ if __name__ == "__main__":
         train_resnet.load_state_dict(torch.load(model_path + model_name + str(index) + ".pt"))
         train_resnet = train_resnet.cuda()
         train_resnet = train_resnet.to(dtype=torch.float32)
-        train(dataset, index)
+        train(dataset)
         torch.save(train_resnet.state_dict(),model_path + model_name + str(index) + ".pt")
