@@ -14,10 +14,10 @@ class BasicNet(nn.Module):
         super(BasicNet, self).__init__()
         self.block1 = Sequential(
             Conv2d(channel, channel, 3, stride=1, padding=1),
-            BatchNorm1d(6),
+            BatchNorm1d(4),
             ReLU(),
             Conv2d(channel, channel, 3, stride=1, padding=1),
-            BatchNorm1d(6)
+            BatchNorm1d(4)
         )
         self.relu = ReLU()
 
@@ -33,10 +33,10 @@ class policy_head(nn.Module):
         super(policy_head, self).__init__()
         self.net = Sequential(
             Conv2d(channel, 2, 1, stride=1),
-            BatchNorm1d(6),
+            BatchNorm1d(4),
             ReLU(),
             Flatten(0),
-            Linear(2 * 36, 16),
+            Linear(2 * 16, 16),
             Softmax(0)
         )
     def forward(self, x):
@@ -48,10 +48,10 @@ class value_head(nn.Module):
         super(value_head, self).__init__()
         self.net = Sequential(
             Conv2d(channel, 1, 1, stride=1),
-            BatchNorm1d(6),
+            BatchNorm1d(4),
             ReLU(),
             Flatten(0),
-            Linear(36, 256),
+            Linear(16, 256),
             ReLU(),
             Linear(256, 1),
             Sigmoid()
@@ -64,8 +64,8 @@ class ResNet(nn.Module):
     def __init__(self):
         super(ResNet, self).__init__()
         self.Convolutional = Sequential(
-            Conv2d(8, 256, 3, stride=1, padding=1),
-            BatchNorm1d(6),
+            Conv2d(8, 256, 3, stride=1, padding=0),
+            BatchNorm1d(4),
             ReLU()
         )
         self.net = self.residual_block()
@@ -383,7 +383,7 @@ def train(dataset0):
     loss2 = CrossEntropyLoss()
     loss1.cuda()
     loss2.cuda()
-    optim = SGD(train_resnet.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
+    optim = SGD(train_resnet.parameters(), lr=0.0001, momentum=0.9, weight_decay=1e-4)
     #optim = Adam(train_resnet.parameters(), lr=0.001)
     epochs = 1
     for epoch in range(epochs):
