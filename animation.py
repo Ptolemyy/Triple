@@ -41,7 +41,7 @@ class FilledGrids(Scene):
         return all_grids
     def construct(self):
         data_path = "data/"
-        animation_name = "Tue_Feb__4_20_46_27_2025of_model_172.json"
+        animation_name = "Wed_Feb__5_08_28_27_2025of_model_172.json"
 
         with open(data_path + animation_name) as f:
             datas = json.loads(f.read())

@@ -145,9 +145,9 @@ class Node:
             self.V0 = 0
             self.P = torch.zeros(16)
         self.V0s = np.full(visitcount, self.V0)
-    def backup_calc(self, c):
+    def backup_calc(self, c, visit_count):
         self.N_s = np.sum(self.N0)
-        self.Q1 = self.V / self.N
+        self.Q1 = self.V / (self.N_s + visit_count)
         self.Q = self.Q1 / max(self.Q1)
         self.puct = (self.N_s ** 1/2) / (np.ones(16) + self.N0)
         self.U = c * self.P * self.puct
@@ -204,7 +204,7 @@ class Tree:
                 self.make_leafs(x, j)
             x.V, x.N0 = self.back_up(j)
             if np.any(x.board != -1):
-                arr0 = x.backup_calc(self.c_puct)
+                arr0 = x.backup_calc(self.c_puct, self.maximum_visit_count)
                 j0 = self.find_leaf(j, arr0)
                 x.V0s = np.append(x.V0s, self.tree[j0].V0)
                 x = self.tree[j0]
@@ -297,14 +297,41 @@ def self_play(num, total_visit_count):
         pi = tree_root.N0 / sum(tree_root.N0)
         dict0 = {"board": tree_root.r_input.tolist(), "Pi": pi.tolist(), "P": 0}
         self_play_dict.append(dict0)
+    score = score_count(self_play_dict)
     for i, x in enumerate(self_play_dict):
-        x["P"] = len(self_play_dict) - i
+        x["P"] = int(score)
     name = time.asctime().replace(" ", "_")
     name = name.replace(":", "_")
     name += "of_model_" + str(num)
     with open("data/" + name + ".json", 'w') as f:
         f.write(json.dumps(self_play_dict, indent = 4))
     return len(self_play_dict)
+
+def log3(x):
+    x = int(x)
+    fx = np.log(x)/np.log(3) if x > 0 else 0
+    return np.ceil(fx)
+
+def score_count(dict):
+    input_ = [x["board"][0] for x in dict]
+    end_input = np.array(input_[-1])
+    end_board = end_input[1:-1, 1:-1]
+    end_board = np.reshape(end_board, 16)
+    raw_score = sum([score_from_num(x) for x in end_board])
+    input_pool = np.array([x[0][1] for x in input_])
+    input_pool = np.where(input_pool == 1, 0, input_pool)
+    minus_score = sum([score_from_num(x) for x in input_pool])
+    real_score = raw_score - minus_score
+    return real_score
+
+def score_from_num(num):
+    if num == 0:
+        return 0
+    num_index = int(log3(num))
+    index_f = np.array([3 ** x for x in range(num_index + 1)])
+    index_b = index_f[::-1]
+    score = sum(index_f * index_b)
+    return score
 
 def remove_duplicates(raw):
     data = []
@@ -356,7 +383,7 @@ def train(dataset0):
     loss2 = CrossEntropyLoss()
     loss1.cuda()
     loss2.cuda()
-    optim = SGD(train_resnet.parameters(), lr=0.005, momentum=0.9, weight_decay=1e-4)
+    optim = SGD(train_resnet.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
     #optim = Adam(train_resnet.parameters(), lr=0.001)
     epochs = 1
     for epoch in range(epochs):
@@ -389,6 +416,7 @@ if __name__ == "__main__":
     parser.add_argument('--selection', type=int, default = 0)
     args = parser.parse_args()
     all_data_num = [int(x.replace('demo','').replace('.json','')) for x in dirlist]
+    all_data_num.append(-1)
     latest_num = max(all_data_num)
     if args.mode == 'diverse_play':
         index = latest_num
