@@ -151,6 +151,7 @@ class Node:
         self.Q = self.Q1 / max(self.Q1)
         self.puct = (self.N_s ** 1/2) / (np.ones(16) + self.N0)
         self.U = c * self.P * self.puct
+        #print(self.U, self.Q)
         return torch.argmax(self.U + self.Q)
 
     def make_leafs_prop(self):
@@ -383,7 +384,7 @@ def train(dataset0):
     loss2 = CrossEntropyLoss()
     loss1.cuda()
     loss2.cuda()
-    optim = SGD(train_resnet.parameters(), lr=0.0001, momentum=0.9, weight_decay=1e-4)
+    optim = SGD(train_resnet.parameters(), lr=1e-4, momentum=0.9, weight_decay=1e-4)
     #optim = Adam(train_resnet.parameters(), lr=0.001)
     epochs = 1
     for epoch in range(epochs):
@@ -406,7 +407,7 @@ if __name__ == "__main__":
     model_path = "model/"
     stat_path = "stat/"
     MAXIMUM_VISIT_COUNT = 5
-    C_PUCT = 1.0
+    C_PUCT = 3.0
     EPSI = 0.25
     TOTAL_VISIT_COUNT = 800
 
