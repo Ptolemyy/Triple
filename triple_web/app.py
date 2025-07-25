@@ -73,7 +73,8 @@ def handle_click():
                 game_data_to_save = {
                     'final_board': main_grid_data,
                     'click_history': click_history,
-                    "grid_history": grid_history
+                    "grid_history": grid_history,
+                    "score": len(click_history)  # 假设分数是点击次数
                 }
                 with open(filename, 'w') as f:
                     json.dump(game_data_to_save, f, indent=4)
