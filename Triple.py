@@ -59,7 +59,6 @@ class Triple:
         if self.board[pos] == 0:
             self.board[pos] = num
             self.search(pos,num)
-            self.update_pool()
 
 if __name__ == "__main__":
     gm = Triple()
