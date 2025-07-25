@@ -384,7 +384,7 @@ def train(dataset0):
     loss2 = CrossEntropyLoss()
     loss1.cuda()
     loss2.cuda()
-    optim = SGD(train_resnet.parameters(), lr=1e-4, momentum=0.9, weight_decay=1e-4)
+    optim = SGD(train_resnet.parameters(), lr=0.0001, momentum=0.9, weight_decay=1e-4)
     #optim = Adam(train_resnet.parameters(), lr=0.001)
     epochs = 1
     for epoch in range(epochs):
