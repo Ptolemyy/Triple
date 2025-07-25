@@ -24,6 +24,7 @@ def index():
         session['main_grid'] = np.zeros(16, dtype=int).tolist()
         session['click_history'] = [] # 新增：初始化点击历史记录
         session['grid_history'] = [] # 新增：初始化格子历史记录
+        
     return render_template('index.html', top_grid=session['top_grid'], main_grid=session['main_grid'])
  
 @app.route('/click', methods=['POST'])
@@ -58,11 +59,12 @@ def handle_click():
             grid_history.append(top_grid_data.copy())
             
             gm = Triple()
-            gm.board = np.array(main_grid_data)
-            gm.num_pool = np.array(top_grid_data)
+            gm.board = np.array(main_grid_data.copy())
+            gm.num_pool = np.array(top_grid_data.copy())
             gm.place(clicked_index, gm.num_pool[0])
-            main_grid_data = gm.board.tolist()
-            top_grid_data = gm.num_pool.tolist()
+            gm.update_pool()
+            main_grid_data = gm.board.copy().tolist()
+            top_grid_data = gm.num_pool.copy().tolist()
  
             if 0 not in main_grid_data:
                 game_over = True

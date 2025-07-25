@@ -109,6 +109,7 @@ class Node:
 
         if placement[0] >= 0:
             gm.place(placement[0], placement[1])
+            gm.update_pool()
         if placement[0] == -2:
             gm.board = np.full(16, -1)
         self.board = np.copy(gm.board)

@@ -7,7 +7,7 @@ class Triple:
         super().__init__()
         self.board = np.array([[0, 0, 0, 0],
                           [0, 0, 0, 0],
-                          [0, 0, 0, 0],
+                          [0, 0, 27, 0],
                           [0, 0, 0, 0]])
         self.board = np.reshape(self.board, 16)
         self.num_pool = np.array([1, 1])
@@ -22,8 +22,8 @@ class Triple:
 
     def update_pool(self):
         num = np.copy(self.possible_num())
-        self.num_pool[1] = np.copy(self.num_pool[0])
-        self.num_pool[0] = np.copy(num[random.randint(0,len(num)-1)])
+        self.num_pool[0] = np.copy(self.num_pool[1])
+        self.num_pool[1] = np.copy(num[random.randint(0,len(num)-1)])
 
     def search(self, pos, num):
         mapping = []
@@ -60,7 +60,6 @@ class Triple:
         if self.board[pos] == 0:
             self.board[pos] = num
             self.search(pos,num)
-            self.update_pool()
 
 if __name__ == "__main__":
     gm = Triple()
@@ -69,5 +68,4 @@ if __name__ == "__main__":
         print(gm.num_pool)
         pos = int(input())
         gm.place(pos,gm.num_pool[0])
-
-#
+        gm.update_pool()
