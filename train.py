@@ -73,7 +73,7 @@ class ResNet(nn.Module):
         self.value = value_head(256)
     def residual_block(self):
         block = []
-        length = 20
+        length = 40  
         for _ in range(0, length - 1):
             block.append(BasicNet(256))
         return Sequential(*block)
@@ -124,7 +124,7 @@ class Node:
             input2 = np.pad(input2,((0,4),(0,4)),mode="constant",constant_values=0)
             input = torch.tensor(input1 + input2,dtype=torch.float16)
             input = torch.reshape(input,(1,6,6))
-            self.input = input.to(torch.float16)
+            #self.input = input.to(torch.float16)
             input = input.cuda()
             feather_planes = feather_planes.cuda()
             self.r_input = torch.cat((input, feather_planes),0)
@@ -262,60 +262,13 @@ class Tree:
             if x.point == point and x.num == num:
                 return i
 
-def select_action(visit_counts, temperature):
-    if temperature == 0:
-        return np.argmax(visit_counts)
-    adjusted_counts = visit_counts ** (1 / temperature)
-    probs = adjusted_counts / np.sum(adjusted_counts)
-
-    action = np.random.choice(len(visit_counts), p=probs)
-    return action
-
-def single_move(saved, title, total_visit_count):
-    p_bar = tqdm.tqdm(total=total_visit_count - saved, desc=title)
-    while True:
-        N0 = tree.tree[0].N0
-        tree.expand_and_evaluate()
-        p_bar.update(1)
-        p_bar.refresh()
-
-        if  sum(N0) > total_visit_count:
-            temp = 1 if tree.tree[0].ar < 30 else 0
-            select_move = select_action(N0, temp)
-            tree.restart(select_move)
-            p_bar.close()
-            return sum(tree.tree[0].N0)
-
-def self_play(num, total_visit_count):
-    saved_move = 0
-    self_play_dict = []
-
-    while True:
-        tree_root = tree.tree[0]
-        bd = tree_root.board
-        if not np.any(bd==0):
-            break
-        saved_move = single_move(saved_move, "self_play_num:" + str(num), total_visit_count)
-        pi = tree_root.N0 / sum(tree_root.N0)
-        dict0 = {"board": tree_root.r_input.tolist(), "Pi": pi.tolist(), "P": 0}
-        self_play_dict.append(dict0)
-    score = score_count(self_play_dict)
-    for i, x in enumerate(self_play_dict):
-        x["P"] = int(score)
-    name = time.asctime().replace(" ", "_")
-    name = name.replace(":", "_")
-    name += "of_model_" + str(num)
-    with open("data/" + name + ".json", 'w') as f:
-        f.write(json.dumps(self_play_dict, indent = 4))
-    return len(self_play_dict)
-
 def log3(x):
     x = int(x)
     fx = np.log(x)/np.log(3) if x > 0 else 0
     return np.ceil(fx)
 
 def score_count(dict):
-    input_ = [x["board"][0] for x in dict]
+    input_ = [x[0] for x in dict]
     end_input = np.array(input_[-1])
     end_board = end_input[1:-1, 1:-1]
     end_board = np.reshape(end_board, 16)
@@ -403,6 +356,74 @@ def train(dataset0):
             result_loss.backward()
             optim.step()
 
+class AlphaTriple:
+    def __init__(self, MAXIMUM_VISIT_COUNT, C_PUCT, EPSI, device, model_path):
+        self.resnet = ResNet()
+        self.resnet.load_state_dict(torch.load(model_path))
+        self.resnet = self.resnet.to(device)
+        self.resnet = self.resnet.half()
+        self.tree = Tree(self.resnet, maximum_visit_count = MAXIMUM_VISIT_COUNT, c_puct = C_PUCT, epsi = EPSI)
+        
+    def select_action(self, visit_counts, temperature):
+        if temperature == 0:
+            return np.argmax(visit_counts)
+        adjusted_counts = visit_counts ** (1 / temperature)
+        probs = adjusted_counts / np.sum(adjusted_counts)
+
+        action = np.random.choice(len(visit_counts), p=probs)
+        return action
+
+    def single_move(self, saved, title, total_visit_count):
+        p_bar = tqdm.tqdm(total=total_visit_count - saved, desc=title)
+        while True:
+            N0 = self.tree.tree[0].N0
+            self.tree.expand_and_evaluate()
+            p_bar.update(1)
+            p_bar.refresh()
+
+            if  sum(N0) > total_visit_count:
+                temp = 1 if self.tree.tree[0].ar < 30 else 0
+                select_move = self.select_action(N0, temp)
+                self.tree.restart(select_move)
+                p_bar.close()
+                return sum(self.tree.tree[0].N0), select_move
+
+    def self_play(self, total_visit_count, num = 0):
+        saved_move = 0
+        click_history = []
+        pi_history = []
+        board_history = []
+        while True:
+            tree_root = self.tree.tree[0]
+            bd = tree_root.board
+            if not np.any(bd==0):
+                break
+            saved_move, move = self.single_move(saved_move, "self_play_num:" + str(num), total_visit_count)
+            pi = tree_root.N0 / sum(tree_root.N0)
+            #dict0 = {"board": tree_root.r_input.tolist(), "Pi": pi.tolist(), "P": 0}
+            click_history.append(move)
+            grid_history = tree_root.num_pool.tolist()
+            pi_history.append(pi.tolist())
+            board_history.append(bd.tolist())
+            
+        experience = {
+                "final_board": board_history[-1],
+                "click_history": click_history,
+                "grid_history": grid_history,
+                "pi_history": pi_history,
+                "steps": len(click_history),
+                "P":0
+        }
+        score = score_count(experience)
+        for i, x in enumerate(experience):
+            x["P"] = int(score)
+        name = time.asctime().replace(" ", "_")
+        name = name.replace(":", "_")
+        name += "of_model_" + str(num)
+        with open("data/" + name + ".json", 'w') as f:
+            f.write(json.dumps(experience, indent = 4))
+
+
 if __name__ == "__main__":
     model_name = "demo"
     model_path = "model/"
@@ -420,47 +441,47 @@ if __name__ == "__main__":
     all_data_num = [int(x.replace('demo','').replace('.json','')) for x in dirlist]
     all_data_num.append(-1)
     latest_num = max(all_data_num)
-    if args.mode == 'diverse_play':
-        index = latest_num
-        while True:#predict
-            index += 1
-            resnet = ResNet()
-            if model_name + str(index) + ".json" not in dirlist:
-                with open(stat_path + model_name + str(index) + ".json", 'w') as f:
-                    f.write(json.dumps([]))
-                torch.save(resnet.state_dict(), model_path + model_name + str(index) + ".pt")
-            with open(stat_path + model_name + str(index) + ".json", 'r') as f:
-                move_steps_list = json.loads(f.read())
-            if model_name + str(index) + ".pt" in os.listdir(model_path):
-                print(model_name + str(index) + " has been loaded")
-                resnet.load_state_dict(torch.load(model_path + model_name + str(index) + ".pt"))
-            resnet = resnet.cuda()
-            resnet = resnet.half()
-            tree = Tree(resnet, maximum_visit_count = MAXIMUM_VISIT_COUNT, c_puct = C_PUCT, epsi = EPSI)
-            move_steps = self_play(index, TOTAL_VISIT_COUNT)
-            move_steps_list.append(move_steps)
-            with open(stat_path + model_name + str(index) + ".json", 'w') as f:
-                f.write(json.dumps(move_steps_list))
-    if args.mode == 'single_play':
-        index = args.selection
-        resnet = ResNet()
-        if model_name + str(index) + ".json" not in dirlist:
-            with open(stat_path + model_name + str(index) + ".json", 'w') as f:
-                f.write(json.dumps([]))
-            torch.save(resnet.state_dict(), model_path + model_name + str(index) + ".pt")
-        while True:
-            with open(stat_path + model_name + str(index) + ".json", 'r') as f:
-                move_steps_list = json.loads(f.read())
-            if model_name + str(index) + ".pt" in os.listdir(model_path):
-                print(model_name + str(index) + " has been loaded")
-                resnet.load_state_dict(torch.load(model_path + model_name + str(index) + ".pt"))
-            resnet = resnet.cuda()
-            resnet = resnet.half()
-            tree = Tree(resnet, maximum_visit_count=MAXIMUM_VISIT_COUNT, c_puct=C_PUCT, epsi=EPSI)
-            move_steps = self_play(index, TOTAL_VISIT_COUNT)
-            move_steps_list.append(move_steps)
-            with open(stat_path + model_name + str(index) + ".json", 'w') as f:
-                f.write(json.dumps(move_steps_list))
+    #if args.mode == 'diverse_play':
+    #    index = latest_num
+    #    while True:#predict
+    #        index += 1
+    #        resnet = ResNet()
+    #        if model_name + str(index) + ".json" not in dirlist:
+    #            with open(stat_path + model_name + str(index) + ".json", 'w') as f:
+    #                f.write(json.dumps([]))
+    #            torch.save(resnet.state_dict(), model_path + model_name + str(index) + ".pt")
+    #        with open(stat_path + model_name + str(index) + ".json", 'r') as f:
+    #            move_steps_list = json.loads(f.read())
+    #        if model_name + str(index) + ".pt" in os.listdir(model_path):
+    #            print(model_name + str(index) + " has been loaded")
+    #            resnet.load_state_dict(torch.load(model_path + model_name + str(index) + ".pt"))
+    #        resnet = resnet.cuda()
+    #        resnet = resnet.half()
+    #        tree = Tree(resnet, maximum_visit_count = MAXIMUM_VISIT_COUNT, c_puct = C_PUCT, epsi = EPSI)
+    #        move_steps = self_play(index, TOTAL_VISIT_COUNT)
+    #        move_steps_list.append(move_steps)
+    #        with open(stat_path + model_name + str(index) + ".json", 'w') as f:
+    #            f.write(json.dumps(move_steps_list))
+    #if args.mode == 'single_play':
+    #    index = args.selection
+    #    resnet = ResNet()
+    #    if model_name + str(index) + ".json" not in dirlist:
+    #        with open(stat_path + model_name + str(index) + ".json", 'w') as f:
+    #            f.write(json.dumps([]))
+    #        torch.save(resnet.state_dict(), model_path + model_name + str(index) + ".pt")
+    #    while True:
+    #        with open(stat_path + model_name + str(index) + ".json", 'r') as f:
+    #            move_steps_list = json.loads(f.read())
+    #        if model_name + str(index) + ".pt" in os.listdir(model_path):
+    #            print(model_name + str(index) + " has been loaded")
+    #            resnet.load_state_dict(torch.load(model_path + model_name + str(index) + ".pt"))
+    #        resnet = resnet.cuda()
+    #        resnet = resnet.half()
+    #        tree = Tree(resnet, maximum_visit_count=MAXIMUM_VISIT_COUNT, c_puct=C_PUCT, epsi=EPSI)
+    #        move_steps = self_play(index, TOTAL_VISIT_COUNT)
+    #        move_steps_list.append(move_steps)
+    #        with open(stat_path + model_name + str(index) + ".json", 'w') as f:
+    #            f.write(json.dumps(move_steps_list))
     if args.mode == 'train':
         index = args.selection
         dataset = TripleDataset()

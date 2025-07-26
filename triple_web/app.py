@@ -43,7 +43,6 @@ def handle_click():
     # 如果棋盘已经满了，直接返回游戏结束状态，不执行任何操作。
     if 0 not in main_grid_data:
         print("Game is already over. Ignoring click.")
-        print("score:", len(click_history))
         return jsonify({
             'top_grid': top_grid_data,
             'main_grid': main_grid_data,
@@ -70,6 +69,7 @@ def handle_click():
             if 0 not in main_grid_data:
                 game_over = True
                 print("Game Over! Board is full.")
+                print("score:", len(click_history))
                 
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = os.path.join(SAVE_DIR, f"game_{timestamp}.json")
