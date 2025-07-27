@@ -87,9 +87,10 @@ class ResNet(nn.Module):
         return output
 
 class Node:
-    def __init__(self,  pool, board, feather_planes, resnet, visitcount, epsi = 0.25,
-                point = 0, num = 0, ar = 0, placement = np.full(2,-1)):
+    def __init__(self,  pool, board, feather_planes, resnet, visitcount, device_id, epsi = 0.25,
+                point = 0, num = 0, ar = 0, placement = np.full(2,-1), ):
         super(Node,self).__init__()
+        self.device_id = device_id
         self.placement = placement
         self.pool = pool
         self.point = point
@@ -125,8 +126,8 @@ class Node:
             input = torch.tensor(input1 + input2,dtype=torch.float16)
             input = torch.reshape(input,(1,6,6))
             #self.input = input.to(torch.float16)
-            input = input.cuda()
-            feather_planes = feather_planes.cuda()
+            input = input.to(self.device_id)
+            feather_planes = feather_planes.to(self.device_id)
             self.r_input = torch.cat((input, feather_planes),0)
             self.r_input = self.r_input.to(torch.float16)
             with torch.no_grad():
@@ -168,8 +169,9 @@ class Node:
         return placement_list
 
 class Tree:
-    def __init__(self,resnet, maximum_visit_count, c_puct, epsi):
+    def __init__(self,resnet, maximum_visit_count, c_puct, epsi, device_id):
         super(Tree, self).__init__()
+        self.device_id = device_id
         self.tree = []
         self.resnet = resnet
         self.maximum_visit_count = maximum_visit_count
@@ -192,7 +194,8 @@ class Tree:
                             feather_planes = feather_planes,
                             resnet = self.resnet,
                             epsi = self.epsi,
-                            visitcount = self.maximum_visit_count
+                            visitcount = self.maximum_visit_count,
+                            device_id=self.device_id
                             ))
 
     def expand_and_evaluate(self):
@@ -231,7 +234,8 @@ class Tree:
                             feather_planes = feather_planes,
                             resnet = self.resnet,
                             epsi = self.epsi,
-                            visitcount=self.maximum_visit_count))
+                            visitcount=self.maximum_visit_count,
+                            device_id=self.device_id))
 
     def restart(self, select):
         temp_tree = []
@@ -262,67 +266,26 @@ class Tree:
             if x.point == point and x.num == num:
                 return i
 
-def log3(x):
-    x = int(x)
-    fx = np.log(x)/np.log(3) if x > 0 else 0
-    return np.ceil(fx)
+def score_count(experience):
+    count_score_gm = Triple()
+    placement = zip(experience.click_history, experience.grid_history)
+    for index, value in placement:
+        count_score_gm.place(index, value[0])
+    return count_score_gm.score
 
-def score_count(dict):
-    input_ = [x[0] for x in dict]
-    end_input = np.array(input_[-1])
-    end_board = end_input[1:-1, 1:-1]
-    end_board = np.reshape(end_board, 16)
-    raw_score = sum([score_from_num(x) for x in end_board])
-    input_pool = np.array([x[0][1] for x in input_])
-    input_pool = np.where(input_pool == 1, 0, input_pool)
-    minus_score = sum([score_from_num(x) for x in input_pool])
-    real_score = raw_score - minus_score
-    return real_score
 
-def score_from_num(num):
-    if num == 0:
-        return 0
-    num_index = int(log3(num))
-    index_f = np.array([3 ** x for x in range(num_index + 1)])
-    index_b = index_f[::-1]
-    score = sum(index_f * index_b)
-    return score
-
-def remove_duplicates(raw):
-    data = []
-    hashmap = []
-    for i in raw:
-        board = str(i["board"])
-        board_hash = hash(board)
-        if board_hash not in hashmap:
-            data.append(i)
-            hashmap.append(board_hash)
-    return data
-
-def get_data():
-    data = []
-    with open("data/log.json","r") as f:
-        log = json.loads(f.read())
-    entries = os.listdir("data")
-    for i in entries:
-        if (not i in log) and i != "log.json":
-            log.append(i)
-            with open("data/" + i, "r") as f:
-                data += json.loads(f.read())
-    with open("data/log.json", 'w') as f:
-        f.write(json.dumps(log))
-    data = remove_duplicates(data)
-    return data
 
 class TripleDataset(Dataset):
     def __init__(self):
-        self.data = get_data()
+        self.data = self.get_data()
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        img = self.data[idx]["board"]
+        click_history = self.data[idx]["click_history"]
+        grid_history = self.data[idx]["grid_history"]
+        img = self.feather_planes_gen(click_history, grid_history)
         img = torch.tensor(img,dtype=torch.float32)
         target_pi = self.data[idx]["Pi"]
         target_pi = torch.tensor(target_pi,dtype=torch.float32)
@@ -331,6 +294,51 @@ class TripleDataset(Dataset):
         target_p = 1 / target_p
         target = torch.cat((target_pi, target_p), dim=0)
         return img, target
+
+    def feather_planes_gen(self, click_history, grid_history):
+        gen_game = Triple()
+        last_feather_plane = np.zeros((7, 6, 6), dtype=np.int16)
+        placement = zip(click_history, grid_history)
+        feather_planes = []
+        for index, value in placement:
+            gen_game.num_pool = value
+            gen_game.place(index, value[0])
+            input1 = np.pad(gen_game.board,pad_width=1,mode="constant",constant_values=0)
+            input2 = np.pad(gen_game.num_pool,(0, 2),mode="constant",constant_values=0)
+            input2 = np.reshape(input2,(2,2))
+            input2 = np.pad(input2,((0,4),(0,4)),mode="constant",constant_values=0)
+            input = torch.tensor(input1 + input2,dtype=torch.float16)
+            input = torch.reshape(input,(1,6,6))
+            feather_plane = torch.cat(input, last_feather_plane, 0)
+            last_feather_plane = feather_plane[:-1]
+            feather_planes.append(feather_plane)
+        return feather_planes
+    
+    def remove_duplicates(self, raw):
+        data = []
+        hashmap = []
+        for i in raw:
+            board = str(i["board"])
+            board_hash = hash(board)
+            if board_hash not in hashmap:
+                data.append(i)
+                hashmap.append(board_hash)
+        return data
+
+    def get_data(self):
+        data = []
+        with open("data/log.json","r") as f:
+            log = json.loads(f.read())
+        entries = os.listdir("data")
+        for i in entries:
+            if (not i in log) and i != "log.json":
+                log.append(i)
+                with open("data/" + i, "r") as f:
+                    data += json.loads(f.read())
+        with open("data/log.json", 'w') as f:
+            f.write(json.dumps(log))
+        data = self.remove_duplicates(data)
+        return data
 
 def train(dataset0):
     dataloader = DataLoader(batch_size=1, shuffle=True, dataset=dataset0)
@@ -357,12 +365,13 @@ def train(dataset0):
             optim.step()
 
 class AlphaTriple:
-    def __init__(self, MAXIMUM_VISIT_COUNT, C_PUCT, EPSI, device, model_path):
+    def __init__(self, MAXIMUM_VISIT_COUNT, C_PUCT, EPSI, device, model_path = None):
         self.resnet = ResNet()
-        self.resnet.load_state_dict(torch.load(model_path))
+        if model_path is not None:
+            self.resnet.load_state_dict(torch.load(model_path))
         self.resnet = self.resnet.to(device)
         self.resnet = self.resnet.half()
-        self.tree = Tree(self.resnet, maximum_visit_count = MAXIMUM_VISIT_COUNT, c_puct = C_PUCT, epsi = EPSI)
+        self.tree = Tree(self.resnet, maximum_visit_count = MAXIMUM_VISIT_COUNT, c_puct = C_PUCT, epsi = EPSI, device_id=device)
         
     def select_action(self, visit_counts, temperature):
         if temperature == 0:
@@ -387,7 +396,7 @@ class AlphaTriple:
                 self.tree.restart(select_move)
                 p_bar.close()
                 return sum(self.tree.tree[0].N0), select_move
-
+    
     def self_play(self, total_visit_count, num = 0):
         saved_move = 0
         click_history = []
@@ -422,66 +431,24 @@ class AlphaTriple:
         name += "of_model_" + str(num)
         with open("data/" + name + ".json", 'w') as f:
             f.write(json.dumps(experience, indent = 4))
-
-
+            
+def generator():
+    
 if __name__ == "__main__":
     model_name = "demo"
     model_path = "model/"
-    stat_path = "stat/"
     MAXIMUM_VISIT_COUNT = 5
     C_PUCT = 3.0
     EPSI = 0.25
     TOTAL_VISIT_COUNT = 800
-
-    dirlist = os.listdir(stat_path)
+    device_count = torch.cuda.device_count()
+    
     parser = argparse.ArgumentParser(description='Monte Carlo Tree Search Example')
     parser.add_argument('--mode', type=str, default='diverse_play')
     parser.add_argument('--selection', type=int, default = 0)
     args = parser.parse_args()
-    all_data_num = [int(x.replace('demo','').replace('.json','')) for x in dirlist]
-    all_data_num.append(-1)
-    latest_num = max(all_data_num)
-    #if args.mode == 'diverse_play':
-    #    index = latest_num
-    #    while True:#predict
-    #        index += 1
-    #        resnet = ResNet()
-    #        if model_name + str(index) + ".json" not in dirlist:
-    #            with open(stat_path + model_name + str(index) + ".json", 'w') as f:
-    #                f.write(json.dumps([]))
-    #            torch.save(resnet.state_dict(), model_path + model_name + str(index) + ".pt")
-    #        with open(stat_path + model_name + str(index) + ".json", 'r') as f:
-    #            move_steps_list = json.loads(f.read())
-    #        if model_name + str(index) + ".pt" in os.listdir(model_path):
-    #            print(model_name + str(index) + " has been loaded")
-    #            resnet.load_state_dict(torch.load(model_path + model_name + str(index) + ".pt"))
-    #        resnet = resnet.cuda()
-    #        resnet = resnet.half()
-    #        tree = Tree(resnet, maximum_visit_count = MAXIMUM_VISIT_COUNT, c_puct = C_PUCT, epsi = EPSI)
-    #        move_steps = self_play(index, TOTAL_VISIT_COUNT)
-    #        move_steps_list.append(move_steps)
-    #        with open(stat_path + model_name + str(index) + ".json", 'w') as f:
-    #            f.write(json.dumps(move_steps_list))
-    #if args.mode == 'single_play':
-    #    index = args.selection
-    #    resnet = ResNet()
-    #    if model_name + str(index) + ".json" not in dirlist:
-    #        with open(stat_path + model_name + str(index) + ".json", 'w') as f:
-    #            f.write(json.dumps([]))
-    #        torch.save(resnet.state_dict(), model_path + model_name + str(index) + ".pt")
-    #    while True:
-    #        with open(stat_path + model_name + str(index) + ".json", 'r') as f:
-    #            move_steps_list = json.loads(f.read())
-    #        if model_name + str(index) + ".pt" in os.listdir(model_path):
-    #            print(model_name + str(index) + " has been loaded")
-    #            resnet.load_state_dict(torch.load(model_path + model_name + str(index) + ".pt"))
-    #        resnet = resnet.cuda()
-    #        resnet = resnet.half()
-    #        tree = Tree(resnet, maximum_visit_count=MAXIMUM_VISIT_COUNT, c_puct=C_PUCT, epsi=EPSI)
-    #        move_steps = self_play(index, TOTAL_VISIT_COUNT)
-    #        move_steps_list.append(move_steps)
-    #        with open(stat_path + model_name + str(index) + ".json", 'w') as f:
-    #            f.write(json.dumps(move_steps_list))
+
+        
     if args.mode == 'train':
         index = args.selection
         dataset = TripleDataset()

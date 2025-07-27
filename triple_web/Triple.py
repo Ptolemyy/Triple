@@ -7,10 +7,11 @@ class Triple:
         super().__init__()
         self.board = np.array([[0, 0, 0, 0],
                           [0, 0, 0, 0],
-                          [0, 0, 27, 0],
+                          [0, 0, 0, 0],
                           [0, 0, 0, 0]])
         self.board = np.reshape(self.board, 16)
         self.num_pool = np.array([1, 1])
+        self.score = 0
     def log3(self, x):
         x = int(x)
         f = np.log(x)/np.log(3) if x > 0 else 0
@@ -56,10 +57,13 @@ class Triple:
             for i in mapping:
                 self.board[i[1]] = 0
                 self.place(pos,num*3)
+                self.score += num*3
+    
     def place(self, pos, num):
         if self.board[pos] == 0:
             self.board[pos] = num
             self.search(pos,num)
+            self.score += 1
 
 if __name__ == "__main__":
     gm = Triple()
