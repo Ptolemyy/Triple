@@ -8,6 +8,7 @@ from Triple import Triple
 import time
 import tqdm
 import json, os, argparse
+import multiprocessing
 
 class BasicNet(nn.Module):
     def __init__(self, channel):
@@ -169,14 +170,14 @@ class Node:
         return placement_list
 
 class Tree:
-    def __init__(self,resnet, maximum_visit_count, c_puct, epsi, device_id):
+    def __init__(self, resnet, device_id):
         super(Tree, self).__init__()
         self.device_id = device_id
         self.tree = []
         self.resnet = resnet
-        self.maximum_visit_count = maximum_visit_count
-        self.c_puct = c_puct
-        self.epsi = epsi
+        self.maximum_visit_count = MAXIMUM_VISIT_COUNT
+        self.c_puct = C_PUCT
+        self.epsi = EPSI
 
         np.random.seed(int(time.time()))
         self.pool = np.random.randint(10,99,3000)
@@ -365,13 +366,13 @@ def train(dataset0):
             optim.step()
 
 class AlphaTriple:
-    def __init__(self, MAXIMUM_VISIT_COUNT, C_PUCT, EPSI, device, model_path = None):
+    def __init__(self, device, model_path = None):
         self.resnet = ResNet()
         if model_path is not None:
             self.resnet.load_state_dict(torch.load(model_path))
         self.resnet = self.resnet.to(device)
         self.resnet = self.resnet.half()
-        self.tree = Tree(self.resnet, maximum_visit_count = MAXIMUM_VISIT_COUNT, c_puct = C_PUCT, epsi = EPSI, device_id=device)
+        self.tree = Tree(self.resnet, device_id=device)
         
     def select_action(self, visit_counts, temperature):
         if temperature == 0:
@@ -397,7 +398,7 @@ class AlphaTriple:
                 p_bar.close()
                 return sum(self.tree.tree[0].N0), select_move
     
-    def self_play(self, total_visit_count, num = 0):
+    def self_play(self, num = 0):
         saved_move = 0
         click_history = []
         pi_history = []
@@ -407,7 +408,7 @@ class AlphaTriple:
             bd = tree_root.board
             if not np.any(bd==0):
                 break
-            saved_move, move = self.single_move(saved_move, "self_play_num:" + str(num), total_visit_count)
+            saved_move, move = self.single_move(saved_move, "self_play_num:" + str(num), TOTAL_VISIT_COUNT)
             pi = tree_root.N0 / sum(tree_root.N0)
             #dict0 = {"board": tree_root.r_input.tolist(), "Pi": pi.tolist(), "P": 0}
             click_history.append(move)
@@ -431,8 +432,24 @@ class AlphaTriple:
         name += "of_model_" + str(num)
         with open("data/" + name + ".json", 'w') as f:
             f.write(json.dumps(experience, indent = 4))
-            
-def generator():
+
+def run(device, model_id):
+    alphatriple = AlphaTriple(device, model_path=model_id)
+    alphatriple.self_play(model_id)
+
+def generator(device_count, epochs, model_id):
+    if device_count != 0:
+        device_list = [torch.device(f"cuda:{i}") for i in range(device_count)]
+        print(f"Using {device_count} GPUs.")
+    else:
+        device_list = torch.device("cpu")
+        print("No GPU found, using CPU.")
+        device_count = 1
+    po = multiprocessing.Pool(device_count)
+    for i in range(0, epochs):
+        po.apply_async(run, args=(device_list[i % device_count], model_id))
+    po.close()
+    po.join()
     
 if __name__ == "__main__":
     model_name = "demo"
@@ -441,16 +458,23 @@ if __name__ == "__main__":
     C_PUCT = 3.0
     EPSI = 0.25
     TOTAL_VISIT_COUNT = 800
+    
     device_count = torch.cuda.device_count()
     
     parser = argparse.ArgumentParser(description='Monte Carlo Tree Search Example')
     parser.add_argument('--mode', type=str, default='diverse_play')
     parser.add_argument('--selection', type=int, default = 0)
+    parser.add_argument('--epoch', type=int, default=1)
     args = parser.parse_args()
-
+    if args.mode == "generate":
+        index = args.selection
+        generate_epoch = args.epoch
+        model_real_path = model_path + model_name + str(index) + ".pt" if index > 0 else None
+        generator(device_count, generate_epoch, model_real_path)
         
     if args.mode == 'train':
         index = args.selection
+        training_epoch = args.epoch
         dataset = TripleDataset()
         train_resnet = ResNet()
         train_resnet.load_state_dict(torch.load(model_path + model_name + str(index) + ".pt"))
