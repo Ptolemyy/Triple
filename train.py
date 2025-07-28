@@ -366,7 +366,10 @@ def train(dataset0):
             optim.step()
 
 class AlphaTriple:
-    def __init__(self, device, model_path = None):
+    def __init__(self, device_, model_path = None):
+        device_list, self.deivce_index = device_
+        device = device_list[self.deivce_index]
+        
         self.resnet = ResNet()
         if model_path is not None:
             self.resnet.load_state_dict(torch.load(model_path))
@@ -384,15 +387,15 @@ class AlphaTriple:
         action = np.random.choice(len(visit_counts), p=probs)
         return action
 
-    def single_move(self, saved, title, total_visit_count):
-        p_bar = tqdm.tqdm(total=total_visit_count - saved, desc=title+ " on " + self.device_name)
+    def single_move(self, saved, title):
+        p_bar = tqdm.tqdm(total=TOTAL_VISIT_COUNT - saved, desc=title+ " on " + self.device_name, position=self.deivce_index)
         while True:
             N0 = self.tree.tree[0].N0
             self.tree.expand_and_evaluate()
             p_bar.update(1)
             p_bar.refresh()
 
-            if  sum(N0) > total_visit_count:
+            if  sum(N0) > TOTAL_VISIT_COUNT:
                 temp = 1 if self.tree.tree[0].ar < 30 else 0
                 select_move = self.select_action(N0, temp)
                 self.tree.restart(select_move)
@@ -448,7 +451,7 @@ def generator(device_count, epochs, model_id):
         device_count = 1
     po = multiprocessing.Pool(device_count)
     for i in range(0, epochs):
-        po.apply_async(run, args=(device_list[i % device_count], model_id))
+        po.apply_async(run, args=((device_list, i % device_count), model_id))
     po.close()
     po.join()
     
