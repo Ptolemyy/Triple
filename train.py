@@ -441,7 +441,7 @@ def run():
     alphatriple = AlphaTriple()
     alphatriple.self_play()
 
-def generator(epochs):
+def generator(epochs, device_count):
     if device_count != 0:
         device_list = [torch.device(f"cuda:{i}") for i in range(device_count)]
         print(f"Using {device_count} GPUs.")
@@ -475,7 +475,7 @@ if __name__ == "__main__":
         model_index = args.selection
         generate_epoch = args.epoch
         model_real_path = model_path + model_name + str(model_index) + ".pt" if model_index > 0 else None
-        generator(generate_epoch)
+        generator(generate_epoch, device_count)
         
     if args.mode == 'train':
         index = args.selection
