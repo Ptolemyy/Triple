@@ -437,8 +437,8 @@ class AlphaTriple:
         with open("data/" + name + ".json", 'w') as f:
             f.write(json.dumps(experience, indent = 4))
 
-def run():
-    alphatriple = AlphaTriple()
+def run(device_list, device_index):
+    alphatriple = AlphaTriple(device_list=device_list, device_index=device_index)
     alphatriple.self_play()
 
 def generator(epochs, device_count):
