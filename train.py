@@ -409,6 +409,7 @@ class AlphaTriple:
         click_history = []
         pi_history = []
         board_history = []
+        grid_history = []
         while True:
             tree_root = self.tree.tree[0]
             bd = tree_root.board
@@ -417,8 +418,8 @@ class AlphaTriple:
             saved_move, move = self.single_move(saved_move)
             pi = tree_root.N0 / sum(tree_root.N0)
             #dict0 = {"board": tree_root.r_input.tolist(), "Pi": pi.tolist(), "P": 0}
-            click_history.append(move)
-            grid_history = tree_root.num_pool.tolist()
+            click_history.append(int(move))
+            grid_history.append(tree_root.num_pool.tolist())
             pi_history.append(pi.tolist())
             board_history.append(bd.tolist())
             
@@ -431,8 +432,7 @@ class AlphaTriple:
                 "P":0
         }
         score = score_count(experience)
-        for i, x in enumerate(experience):
-            x["P"] = int(score)
+        experience["P"] = int(score)
         name = time.asctime().replace(" ", "_")
         name = name.replace(":", "_")
         name += "of_model_" + str(self.model_index)
