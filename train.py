@@ -373,6 +373,7 @@ class AlphaTriple:
         self.resnet = self.resnet.to(device)
         self.resnet = self.resnet.half()
         self.tree = Tree(self.resnet, device_id=device)
+        self.device_name = str(device)
         
     def select_action(self, visit_counts, temperature):
         if temperature == 0:
@@ -384,7 +385,7 @@ class AlphaTriple:
         return action
 
     def single_move(self, saved, title, total_visit_count):
-        p_bar = tqdm.tqdm(total=total_visit_count - saved, desc=title)
+        p_bar = tqdm.tqdm(total=total_visit_count - saved, desc=title+ " on " + self.device_name)
         while True:
             N0 = self.tree.tree[0].N0
             self.tree.expand_and_evaluate()
