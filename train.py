@@ -90,7 +90,7 @@ class ResNet(nn.Module):
 class Node:
     def __init__(self,  pool, board, feather_planes, resnet, visitcount, device_id, epsi = 0.25,
                 point = 0, num = 0, ar = 0, placement = np.full(2,-1), ):
-        super(Node,self).__init__()
+        super(Node, self).__init__()
         self.device_id = device_id
         self.placement = placement
         self.pool = pool
@@ -105,7 +105,6 @@ class Node:
         self.order += 100000 * np.random.random()
         self.feather_planes = feather_planes
         gm = Triple()
-
         gm.board = np.copy(self.board)
         gm.board = np.reshape(gm.board, 16)
 
@@ -178,7 +177,6 @@ class Tree:
         self.maximum_visit_count = MAXIMUM_VISIT_COUNT
         self.c_puct = C_PUCT
         self.epsi = EPSI
-
         np.random.seed(int(time.time()))
         self.pool = np.random.randint(10,99,3000)
         init_board = np.array([[0,0,0,0],
@@ -188,7 +186,6 @@ class Tree:
         init_pool = self.pool[:2]
         feather_planes = np.full((7,6,6),np.zeros((6,6)))
         feather_planes = torch.tensor(feather_planes)
-
         self.tree.append(Node(board = init_board,
                             pool = init_pool,
                             point=-1,
@@ -366,17 +363,20 @@ def train(dataset0):
             optim.step()
 
 class AlphaTriple:
-    def __init__(self, device_, model_path = None):
-        device_list, self.deivce_index = device_
-        device = device_list[self.deivce_index]
-        
+    def __init__(self, device_list, device_index):
+        self.device_list = device_list
+        self.deivce_index = device_index
+        self.model_index = model_index
+        self.device = self.device_list[self.deivce_index]
         self.resnet = ResNet()
-        if model_path is not None:
-            self.resnet.load_state_dict(torch.load(model_path))
-        self.resnet = self.resnet.to(device)
+        self.model_path = model_real_path
+        if self.model_path is not None:
+            self.resnet.load_state_dict(torch.load(self.model_path))
+
+        self.resnet = self.resnet.to(self.device)
         self.resnet = self.resnet.half()
-        self.tree = Tree(self.resnet, device_id=device)
-        self.device_name = str(device)
+        self.tree = Tree(self.resnet, device_id=self.device)
+        self.device_name = str(self.device)
         
     def select_action(self, visit_counts, temperature):
         if temperature == 0:
@@ -387,8 +387,8 @@ class AlphaTriple:
         action = np.random.choice(len(visit_counts), p=probs)
         return action
 
-    def single_move(self, saved, title):
-        p_bar = tqdm.tqdm(total=TOTAL_VISIT_COUNT - saved, desc=title+ " on " + self.device_name, position=self.deivce_index)
+    def single_move(self, saved):
+        p_bar = tqdm.tqdm(total=TOTAL_VISIT_COUNT - saved, desc="self_play on" + self.device_name, position=self.deivce_index)
         while True:
             N0 = self.tree.tree[0].N0
             self.tree.expand_and_evaluate()
@@ -402,7 +402,7 @@ class AlphaTriple:
                 p_bar.close()
                 return sum(self.tree.tree[0].N0), select_move
     
-    def self_play(self, num = 0):
+    def self_play(self):
         saved_move = 0
         click_history = []
         pi_history = []
@@ -412,7 +412,7 @@ class AlphaTriple:
             bd = tree_root.board
             if not np.any(bd==0):
                 break
-            saved_move, move = self.single_move(saved_move, "self_play_num:" + str(num), TOTAL_VISIT_COUNT)
+            saved_move, move = self.single_move(saved_move)
             pi = tree_root.N0 / sum(tree_root.N0)
             #dict0 = {"board": tree_root.r_input.tolist(), "Pi": pi.tolist(), "P": 0}
             click_history.append(move)
@@ -433,15 +433,15 @@ class AlphaTriple:
             x["P"] = int(score)
         name = time.asctime().replace(" ", "_")
         name = name.replace(":", "_")
-        name += "of_model_" + str(num)
+        name += "of_model_" + str(self.model_index)
         with open("data/" + name + ".json", 'w') as f:
             f.write(json.dumps(experience, indent = 4))
 
-def run(device, model_id):
-    alphatriple = AlphaTriple(device, model_path=model_id)
-    alphatriple.self_play(model_id)
+def run():
+    alphatriple = AlphaTriple()
+    alphatriple.self_play()
 
-def generator(device_count, epochs, model_id):
+def generator(epochs):
     if device_count != 0:
         device_list = [torch.device(f"cuda:{i}") for i in range(device_count)]
         print(f"Using {device_count} GPUs.")
@@ -451,7 +451,7 @@ def generator(device_count, epochs, model_id):
         device_count = 1
     po = multiprocessing.Pool(device_count)
     for i in range(0, epochs):
-        po.apply_async(run, args=((device_list, i % device_count), model_id))
+        po.apply_async(run, args=(device_list, i % device_count))
     po.close()
     po.join()
     
@@ -464,17 +464,18 @@ if __name__ == "__main__":
     TOTAL_VISIT_COUNT = 800
     
     device_count = torch.cuda.device_count()
-    
+
     parser = argparse.ArgumentParser(description='Monte Carlo Tree Search Example')
     parser.add_argument('--mode', type=str, default='diverse_play')
     parser.add_argument('--selection', type=int, default = 0)
     parser.add_argument('--epoch', type=int, default=1)
     args = parser.parse_args()
     if args.mode == "generate":
-        index = args.selection
+        
+        model_index = args.selection
         generate_epoch = args.epoch
-        model_real_path = model_path + model_name + str(index) + ".pt" if index > 0 else None
-        generator(device_count, generate_epoch, model_real_path)
+        model_real_path = model_path + model_name + str(model_index) + ".pt" if model_index > 0 else None
+        generator(generate_epoch)
         
     if args.mode == 'train':
         index = args.selection
