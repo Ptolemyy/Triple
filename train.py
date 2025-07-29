@@ -387,23 +387,24 @@ class AlphaTriple:
         probs = adjusted_counts / sum(adjusted_counts)
         #print(sum(probs))
         action = torch.multinomial(probs, num_samples=1, replacement=True)
+        #print(probs, action)
         return action
 
     def single_move(self, saved):
-        p_bar = tqdm.tqdm(total=TOTAL_VISIT_COUNT - saved, desc="self_play_on_" + self.device_name, position=self.deivce_index)
+        p_bar = tqdm.tqdm(total=TOTAL_VISIT_COUNT - saved, desc="self_play_on_" + self.device_name, 
+                          position=self.deivce_index, leave=True)
         while True:
             N0 = self.tree.tree[0].N0
             self.tree.expand_and_evaluate()
-            p_bar.update(1)
-            p_bar.refresh()
-
-            if  sum(N0) > TOTAL_VISIT_COUNT:
-                temp = 1 if self.tree.tree[0].ar < 30 else 0
-                select_move = self.select_action(N0, temp)
-                self.tree.restart(select_move)
-                p_bar.close()
-                return int(sum(self.tree.tree[0].N0)), select_move
-    
+            with tqdm.tqdm.get_lock():
+                p_bar.update(1)
+                if  sum(N0) > TOTAL_VISIT_COUNT:
+                    temp = 1 if self.tree.tree[0].ar < 30 else 0
+                    select_move = self.select_action(N0, temp)
+                    self.tree.restart(select_move)
+                    p_bar.close()
+                    return int(sum(self.tree.tree[0].N0)), select_move
+        
     def self_play(self):
         saved_move = 0
         click_history = []
@@ -439,7 +440,11 @@ class AlphaTriple:
         with open("data/" + name + ".json", 'w') as f:
             f.write(json.dumps(experience, indent = 4))
 
-def run(device_list, device_index):
+def worker_init_fn(worker_id):
+    seed = int(time.time() * 1000) % (10**9) + os.getpid()
+    torch.manual_seed(seed)
+
+def run(device_list, device_index):    
     alphatriple = AlphaTriple(device_list=device_list, device_index=device_index)
     alphatriple.self_play()
 
@@ -452,7 +457,7 @@ def generator(epochs, device_count):
         print("No GPU found, using CPU.")
         device_count = 1
     if device_count > 1: #多进程
-        po = multiprocessing.Pool(device_count)
+        po = multiprocessing.Pool(processes=device_count, initializer=worker_init_fn, initargs=(1,))
         for i in range(0, epochs):
             po.apply_async(run, args=(device_list, i % device_count))
         po.close()
