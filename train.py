@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from torch.nn import Sequential,Conv2d,Linear,Flatten,ReLU,Sigmoid,BatchNorm1d,MSELoss,CrossEntropyLoss,Softmax
+from torch.nn import Sequential,Conv2d,Linear,Flatten,ReLU,Sigmoid,BatchNorm2d,MSELoss,CrossEntropyLoss,Softmax
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import SGD
 from Triple import Triple
@@ -15,10 +15,10 @@ class BasicNet(nn.Module):
         super(BasicNet, self).__init__()
         self.block1 = Sequential(
             Conv2d(channel, channel, 3, stride=1, padding=1),
-            BatchNorm1d(4),
+            BatchNorm2d(channel),
             ReLU(),
             Conv2d(channel, channel, 3, stride=1, padding=1),
-            BatchNorm1d(4)
+            BatchNorm2d(channel)
         )
         self.relu = ReLU()
 
@@ -34,11 +34,11 @@ class policy_head(nn.Module):
         super(policy_head, self).__init__()
         self.net = Sequential(
             Conv2d(channel, 2, 1, stride=1),
-            BatchNorm1d(4),
+            BatchNorm2d(2),
             ReLU(),
-            Flatten(0),
+            Flatten(1),
             Linear(2 * 16, 16),
-            Softmax(0)
+            Softmax(dim=1)
         )
     def forward(self, x):
         x = self.net(x)
@@ -49,9 +49,9 @@ class value_head(nn.Module):
         super(value_head, self).__init__()
         self.net = Sequential(
             Conv2d(channel, 1, 1, stride=1),
-            BatchNorm1d(4),
+            BatchNorm2d(1),
             ReLU(),
-            Flatten(0),
+            Flatten(1),
             Linear(16, 256),
             ReLU(),
             Linear(256, 1),
@@ -62,33 +62,27 @@ class value_head(nn.Module):
         return x
 
 class ResNet(nn.Module):
-    def __init__(self):
+    def __init__(self, channels = 256, length = 40):
         super(ResNet, self).__init__()
         self.Convolutional = Sequential(
-            Conv2d(8, 256, 3, stride=1, padding=0),
-            BatchNorm1d(4),
+            Conv2d(8, channels, 3, stride=1, padding=0),
+            BatchNorm2d(channels),
             ReLU()
         )
-        self.net = self.residual_block()
-        self.policy = policy_head(256)
-        self.value = value_head(256)
-    def residual_block(self):
-        block = []
-        length = 40  
-        for _ in range(0, length - 1):
-            block.append(BasicNet(256))
-        return Sequential(*block)
+        self.net = Sequential(*[BasicNet(channels) for _ in range(length)])
+        self.policy = policy_head(channels)
+        self.value = value_head(channels)
 
     def forward(self, x):
         x = self.Convolutional(x)
         x = self.net(x)
         p = self.policy(x)
         v = self.value(x)
-        output = torch.cat((p, v), 0)
+        output = torch.cat((p, v), dim=1)
         return output
 
 class Node:
-    def __init__(self,  pool, board, feather_planes, resnet, visitcount, device_id, epsi = 0.25,
+    def __init__(self,  pool, board, feather_planes, visitcount, device_id,
                 point = 0, num = 0, ar = 0, placement = torch.full((2,),-1), ):
         super(Node, self).__init__()
         self.device_id = device_id
@@ -118,6 +112,9 @@ class Node:
 
         possible_num = gm.possible_num()
         self.num_pool = torch.tensor([possible_num[x % len(possible_num)] for x in pool])
+        
+        self.V0 = torch.tensor(0.)
+        self.P = torch.zeros(16)
         if torch.any(self.board!=-1):
             input1 = F.pad(self.board,(1,1,1,1),mode="constant",value=0)
             input2 = F.pad(self.num_pool,(0, 2),mode="constant", value=0)
@@ -131,24 +128,7 @@ class Node:
             feather_planes = feather_planes.to(self.device_id)
             self.r_input = torch.cat((input, feather_planes),0)
             self.r_input = self.r_input.to(torch.float16)
-            with torch.no_grad():
-                #resnet.eval()
-                self.output = resnet(self.r_input)
-                self.P = self.output[:-1]
-                self.V0 = self.output[-1]
-                self.P = self.P.cpu()
-                if ar >= 30:
-                    alpha = torch.full((16,), 0.03)
-                    dirichlet_dist  = torch.distributions.Dirichlet(alpha)
-                    eta = dirichlet_dist.sample()
-                    self.P = (1 - epsi) * self.P + epsi * eta
-                    #self.P = torch.tensor(self.P)
-                self.V0 = self.V0.cpu()
-                self.V0 = 1 / self.V0
-        else:
-            self.V0 = torch.tensor(0.)
-            self.P = torch.zeros(16)
-        self.V0s = torch.full((visitcount,), self.V0)
+            
     def backup_calc(self, c, visit_count):
         self.N_s = sum(self.N0)
         self.Q1 = self.V / (self.N_s + visit_count)
@@ -192,11 +172,13 @@ class Tree:
                             pool = init_pool,
                             point=-1,
                             feather_planes = feather_planes,
-                            resnet = self.resnet,
-                            epsi = self.epsi,
                             visitcount = self.maximum_visit_count,
                             device_id=self.device_id
                             ))
+        output = self.forward([self.tree[0]])
+        self.tree[0].P = output[0][:-1]
+        self.tree[0].V0 = output[0][-1]
+        self.tree[0].V0s = torch.full((self.maximum_visit_count,), self.tree[0].V0)
 
     def expand_and_evaluate(self):
         #print(self.tree[-1].board)
@@ -233,11 +215,13 @@ class Tree:
                             ar = ar + 1,
                             board = x[2],
                             feather_planes = feather_planes,
-                            resnet = self.resnet,
-                            epsi = self.epsi,
                             visitcount=self.maximum_visit_count,
                             device_id=self.device_id))
-
+        output_ = self.forward(self.tree[-len(prop):])
+        for i in range(1, len(prop) + 1):
+            self.tree[-i].P = output_[-i][:-1]
+            self.tree[-i].V0 = output_[-i][-1]
+            self.tree[-i].V0s = torch.full((self.maximum_visit_count,), self.tree[-i].V0)
     def restart(self, select):
         temp_tree = []
         list0 = [self.tree[select+1].order]
@@ -266,6 +250,38 @@ class Tree:
         for i, x in enumerate(self.tree):
             if x.point == point and x.num == num:
                 return i
+    
+    def forward(self, nodes):
+        forward_list = []
+        batch_input_ = []
+        ar = nodes[0].ar
+        alpha = torch.full((16,), 0.03)
+        output_list = [torch.zeros(17, ) for _ in range(len(nodes))]
+        for index, node in enumerate(nodes):
+            if torch.any(node.board!=-1):
+                forward_list.append(index)
+                batch_input_.append(node.r_input)
+        if len(batch_input_) == 0:
+            return output_list
+        batch_input = torch.stack([i for i in batch_input_])
+        batch_input_ = batch_input.to(self.device_id)
+        with torch.no_grad():
+            self.resnet.eval()
+            self.outputs = self.resnet(batch_input_)
+            self.outputs = self.outputs.cpu()
+        for output in self.outputs:
+            if ar >= 30:
+                dirichlet_dist  = torch.distributions.Dirichlet(alpha)
+                eta = dirichlet_dist.sample()
+                output[:-1] = (1 - self.epsi) * output[:-1] + self.epsi * eta
+            output[-1] = 1 / output[-1]
+        index_ = 0
+        for index, output in enumerate(output_list):
+            if index in forward_list:
+                output[:-1] = self.outputs[index_][:-1]
+                output[-1] = self.outputs[index_][-1]
+                index_ += 1
+        return output_list
 
 def score_count(experience):
     count_score_gm = Triple()
@@ -392,7 +408,7 @@ class AlphaTriple:
 
     def single_move(self, saved):
         p_bar = tqdm.tqdm(total=TOTAL_VISIT_COUNT - saved, desc="self_play_on_" + self.device_name, 
-                          position=self.deivce_index, leave=True)
+                          position=self.deivce_index, leave=False)
         while True:
             N0 = self.tree.tree[0].N0
             self.tree.expand_and_evaluate()
@@ -444,28 +460,29 @@ def worker_init_fn(worker_id):
     seed = int(time.time() * 1000) % (10**9) + os.getpid()
     torch.manual_seed(seed)
 
-def run(device_list, device_index):    
-    alphatriple = AlphaTriple(device_list=device_list, device_index=device_index)
-    alphatriple.self_play()
+def run(arg):
+    steps, device_list, device_index = arg
+    for i in range(steps):
+        alphatriple = AlphaTriple(device_list=device_list, device_index=device_index)
+        alphatriple.self_play()
 
-def generator(epochs, device_count):
+def generator(epochs, device_count):#EPOCH = TASK_PER_GPU * DEVICE_COUNT * STEPS_PER_DEVICE
     if device_count != 0:
         device_list = [torch.device(f"cuda:{i}") for i in range(device_count)]
         print(f"Using {device_count} GPUs.")
+        device_list = device_list * TASK_PER_DEVICE
     else:
         device_list = torch.device("cpu")
         print("No GPU found, using CPU.")
         device_count = 1
     if device_count > 1: #多进程
-        po = multiprocessing.Pool(processes=device_count, initializer=worker_init_fn, initargs=(1,))
-        for i in range(0, epochs):
-            po.apply_async(run, args=(device_list, i % device_count))
-        po.close()
-        po.join()
-    else: #单进程
-        for i in range(0, epochs):
-            run(device_list, 0)
+        steps_per_device = epochs // device_count // TASK_PER_DEVICE
+        tasks = [(steps_per_device, device_list, i) for i in range(device_count * TASK_PER_DEVICE)]
+        with multiprocessing.Pool(processes=device_count * TASK_PER_DEVICE, initializer=worker_init_fn, initargs=(1,)) as po:
+            po.map(run, tasks)
         
+    else: #单进程
+        run((epochs, device_list, 0))  
     
 if __name__ == "__main__":
     model_name = "demo"
@@ -474,6 +491,7 @@ if __name__ == "__main__":
     C_PUCT = 3.0
     EPSI = 0.25
     TOTAL_VISIT_COUNT = 800
+    TASK_PER_DEVICE = 1
     
     device_count = torch.cuda.device_count()
 
