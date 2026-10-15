@@ -121,7 +121,7 @@ def generate_device(model_path, device_index,is_half, batch_size):
             if first is None:
                 break
             
-            batch = [first]
+            inputs = [first]
             
             stop_after_batch = False
             
@@ -135,23 +135,17 @@ def generate_device(model_path, device_index,is_half, batch_size):
                     stop_after_batch = True
                     break
 
-                batch.append(task)
+                inputs.append(task)
+            seeds, batch = map(list, zip(*inputs))
             batch = torch.stack(batch)
             batch = batch.to(device_name)
             with torch.no_grad():
                 resnet.eval()
                 outputs = resnet(batch)
                 outputs = outputs.cpu()
+            results = list(zip(seeds, outputs))
+            for seed, output in results:
+                result_queue.put((seed, output))
                 
-            for output in outputs:
-                result_queue.put(output)
-                
-            
             if stop_after_batch:
                 break
-        
-        
-        
-        
-        
-        
