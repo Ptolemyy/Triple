@@ -28,45 +28,45 @@ class Tree:
                         [0,0,0,0],
                         [0,0,0,0],
                         [0,0,0,0]],dtype=torch.float16)
-        init_pool = self.pool[:3]
+        init_pool = self.pool[:2]
         gm.board = init_board.clone()
         gm.board = torch.flatten(gm.board)
         possible_num = gm.possible_num()
         num_pool = torch.tensor([possible_num[x % len(possible_num)] for x in init_pool[:2]])
-        raw_sliced = 1 - torch.tensor([min(x,1) for x in torch.reshape(init_board,(16,))])
-        placements = torch.full((16,), num_pool[0])
-        placements = placements * raw_sliced #排除非法节点
+        init_placement = torch.full((2, ), -1)
         edge = {
-            "index": -1,
+            "index": 0,
             "ar": 0,
             "pre_index": -1,
             "raw_board": init_board,
-            "init_pool": init_pool,
+            "pool": init_pool,
             "feather_planes": torch.zeros((7,6,6), dtype=torch.float16),
             "V" : torch.zeros((16,), dtype=torch.float16),
             "N" : torch.zeros((16,), dtype=torch.int16),
             "P" : torch.zeros((16,), dtype=torch.float16),
             "V0s" : torch.zeros((16,), dtype=torch.float16),
-            "placements": placements,
+            "placements": init_placement,
             "suf_index": torch.zeros((16,), dtype=torch.int16),
             "p0": torch.zeros((16,16), dtype=torch.float16),
             "v0": torch.zeros((16,), dtype=torch.float16),
+            "r_input": torch.zeros((8, 6, 6))
         }
+        self.edge_pattern = edge.copy()
         self.tree.append(edge)
         output = self.forward([self.tree[0]])
         self.tree[0].P = output[0][:-1]
         self.tree[0].V0 = output[0][-1]
-        self.tree[0].V0s = torch.full((self.maximum_visit_count,), self.tree[0].V0)
+        self.tree[0].V0s = torch.full((self.maximum_visit_count,), self.tree[0]["V0"])
         
 
     def expand_and_evaluate(self):
         #print(self.tree[-1].board)
         x = self.tree[0]
-        j = x.order
-        x.point = -1
+        j = x['index']
+        x['pre_index'] = -1
         while True:
-            if ((x.point == -1 or x.N == self.maximum_visit_count)
-                    and torch.any(x.V == -1) and torch.any(x.board != -1)):
+            if ((x["pre_index"] == -1 or x["N"] == self.maximum_visit_count)
+                    and torch.any(x["V"] == -1) and torch.any(x["raw_board"] != -1)):
                 self.make_leafs(x, j)
             x.V, x.N0 = self.back_up(j)
             if torch.any(x.board != -1):
@@ -81,12 +81,31 @@ class Tree:
                     or torch.any(x.board == -1)):
                 break
 
+    def make_leafs_prop(self, edge):
+        board_1 = torch.reshape(edge["raw_board"], (16, ))
+        raw_sliced = 1 - torch.tensor([min(x,1) for x in board_1])
+        placement_list = []
+        for i, x in enumerate(raw_sliced):
+            placement = -2, -2, edge["raw_board"]
+            if x != 0:
+                placement = i, edge["num_pool"][0], edge["raw_board"]
+            placement_list.append(placement)
+        return placement_list, raw_sliced
+
     def make_leafs(self, father, point):
-        prop = father.make_leafs_prop()
-        ar = father.ar
+        prop, raw_sliced = self.make_leafs_prop(father)
+        ar = father['ar']
         init_pool = self.pool[ar:ar+2]
-        feather_planes = father.r_input[:-1]
+        feather_planes = father['r_input'][:-1]
         for i,x in enumerate(prop):
+            edge_ = self.edge_pattern.copy()
+            
+            edge_["placement"] = x[:2]
+            edge_["pool"] = init_pool
+            edge_["pre_index"] = point
+            edge_
+
+
             self.tree.append(Node(placement = x[:2],
                             pool = init_pool,
                             point = point,
