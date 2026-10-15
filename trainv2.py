@@ -49,7 +49,8 @@ class Tree:
             "suf_index": torch.zeros((16,), dtype=torch.int16),
             "p0": torch.zeros((16,16), dtype=torch.float16),
             "v0": torch.zeros((16,), dtype=torch.float16),
-            "r_input": torch.zeros((8, 6, 6))
+            "r_input": torch.zeros((8, 6, 6)),
+            "num": 0,
         }
         self.edge_pattern = edge.copy()
         self.tree.append(edge)
@@ -68,7 +69,7 @@ class Tree:
             if ((x["pre_index"] == -1 or x["N"] == self.maximum_visit_count)
                     and torch.any(x["V"] == -1) and torch.any(x["raw_board"] != -1)):
                 self.make_leafs(x, j)
-            x.V, x.N0 = self.back_up(j)
+            x["V"], x["N0"] = self.back_up(j)
             if torch.any(x.board != -1):
                 arr0 = x.backup_calc(self.c_puct, self.maximum_visit_count)
                 j0 = self.find_leaf(j, arr0)
@@ -103,23 +104,18 @@ class Tree:
             edge_["placement"] = x[:2]
             edge_["pool"] = init_pool
             edge_["pre_index"] = point
-            edge_
+            edge_["num"] = i
+            edge_["ar"] = ar + 1
+            edge_["raw_board"] = x[2]
+            edge_["feather_planes"] = feather_planes
+            edge_["index"] = len(self.tree)
 
-
-            self.tree.append(Node(placement = x[:2],
-                            pool = init_pool,
-                            point = point,
-                            num = i,
-                            ar = ar + 1,
-                            board = x[2],
-                            feather_planes = feather_planes,
-                            visitcount=self.maximum_visit_count,
-                            device_id=self.device_id))
+            self.tree.append(edge_)
         output_ = self.forward(self.tree[-len(prop):])
         for i in range(1, len(prop) + 1):
-            self.tree[-i].P = output_[-i][:-1]
-            self.tree[-i].V0 = output_[-i][-1]
-            self.tree[-i].V0s = torch.full((self.maximum_visit_count,), self.tree[-i].V0)
+            self.tree[-i]["P"] = output_[-i][:-1]
+            self.tree[-i]["V0"] = output_[-i][-1]
+            self.tree[-i]["V0s"] = torch.full((self.maximum_visit_count,), self.tree[-i]["V0"])
     def restart(self, select):
         temp_tree = []
         list0 = [self.tree[select+1].order]
