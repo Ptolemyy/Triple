@@ -9,77 +9,7 @@ import tqdm
 import json, os, argparse
 import multiprocessing
 import torch.nn.functional as F
-
-class BasicNet(nn.Module):
-    def __init__(self, channel):
-        super(BasicNet, self).__init__()
-        self.block1 = Sequential(
-            Conv2d(channel, channel, 3, stride=1, padding=1),
-            BatchNorm2d(channel),
-            ReLU(),
-            Conv2d(channel, channel, 3, stride=1, padding=1),
-            BatchNorm2d(channel)
-        )
-        self.relu = ReLU()
-
-    def forward(self, x):
-        identity = x
-        x = self.block1(x)
-        x += identity
-        x = self.relu(x)
-        return x
-
-class policy_head(nn.Module):
-    def __init__(self, channel):
-        super(policy_head, self).__init__()
-        self.net = Sequential(
-            Conv2d(channel, 2, 1, stride=1),
-            BatchNorm2d(2),
-            ReLU(),
-            Flatten(1),
-            Linear(2 * 16, 16),
-            Softmax(dim=1)
-        )
-    def forward(self, x):
-        x = self.net(x)
-        return x
-
-class value_head(nn.Module):
-    def __init__(self, channel):
-        super(value_head, self).__init__()
-        self.net = Sequential(
-            Conv2d(channel, 1, 1, stride=1),
-            BatchNorm2d(1),
-            ReLU(),
-            Flatten(1),
-            Linear(16, 256),
-            ReLU(),
-            Linear(256, 1),
-            Sigmoid()
-        )
-    def forward(self, x):
-        x = self.net(x)
-        return x
-
-class ResNet(nn.Module):
-    def __init__(self, channels = 256, length = 40):
-        super(ResNet, self).__init__()
-        self.Convolutional = Sequential(
-            Conv2d(8, channels, 3, stride=1, padding=0),
-            BatchNorm2d(channels),
-            ReLU()
-        )
-        self.net = Sequential(*[BasicNet(channels) for _ in range(length)])
-        self.policy = policy_head(channels)
-        self.value = value_head(channels)
-
-    def forward(self, x):
-        x = self.Convolutional(x)
-        x = self.net(x)
-        p = self.policy(x)
-        v = self.value(x)
-        output = torch.cat((p, v), dim=1)
-        return output
+from model import ResNet
 
 class Node:
     def __init__(self,  pool, board, feather_planes, visitcount, device_id,
@@ -133,7 +63,7 @@ class Node:
         self.N_s = sum(self.N0)
         self.Q1 = self.V / (self.N_s + visit_count)
         self.Q = self.Q1 / max(self.Q1)
-        self.puct = (self.N_s ** 1/2) / (torch.ones(16) + self.N0)
+        self.puct = (self.N_s ** 1/2    ) / (torch.ones(16) + self.N0)
         self.U = c * self.P * self.puct
 
         return torch.argmax(self.U + self.Q)
@@ -496,7 +426,7 @@ if __name__ == "__main__":
     device_count = torch.cuda.device_count()
 
     parser = argparse.ArgumentParser(description='Monte Carlo Tree Search Example')
-    parser.add_argument('--mode', type=str, default='diverse_play')
+    parser.add_argument('--mode', type=str, default='generate')
     parser.add_argument('--selection', type=int, default = 0)
     parser.add_argument('--epoch', type=int, default=1)
     args = parser.parse_args()
