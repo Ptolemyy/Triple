@@ -192,14 +192,24 @@ class Tree:
                 if x != -1:
                     father_node = self.tree[x]
                     suf_indexes = father_node["suf_index"]
-                    new_list = [self.tree[j] for j in suf_indexes] #node
+                    new_list = [self.tree[j]['index'] for j in suf_indexes] #node
                     list0[i] = -1
                     list0 += new_list
                     node0 = self.tree[x]
                     temp_tree.append(node0)
                     mapping.append((node0["index"], len(temp_tree)-1))
-            if not any(list0):
+            if not any(list0 != -1):
                 break
+        for i in temp_tree:
+            raw_index = i["index"].copy()
+            raw_pre_index = i["pre_index"].copy()
+            raw_suf_index = i["suf_index"].copy()
+            
+            i["index"] = mapping.index(raw_index)
+            i['pre_index'] = mapping.index(raw_pre_index)
+            
+            i['suf_index'] = torch.tensor([mapping.index(x) for x in raw_suf_index])
+            
         self.tree = temp_tree
 
     def back_up(self, suf_indexes):
