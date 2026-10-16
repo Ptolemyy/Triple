@@ -21,7 +21,7 @@ class Tree:
         self.maximum_visit_count = MAXIMUM_VISIT_COUNT
         self.c_puct = C_PUCT
         self.epsi = EPSI
-        gm = Triple()
+        self.gm = Triple()
         torch.manual_seed(int(time.time()))
         self.pool = torch.randint(10,99,(3000,))
         init_board = torch.tensor([[0,0,0,0],
@@ -29,20 +29,16 @@ class Tree:
                         [0,0,0,0],
                         [0,0,0,0]],dtype=torch.float16)
         init_pool = self.pool[:2]
-        gm.board = init_board.clone()
-        gm.board = torch.flatten(gm.board)
-        possible_num = gm.possible_num()
-        num_pool = torch.tensor([possible_num[x % len(possible_num)] for x in init_pool[:2]])
         init_placement = torch.full((2, ), -1)
-        edge = {
+        node = {
             "index": 0,
             "ar": 0,
             "pre_index": -1,
             "raw_board": init_board,
             "pool": init_pool,
             "feather_planes": torch.zeros((7,6,6), dtype=torch.float16),
-            "V" : torch.zeros((16,), dtype=torch.float16),
-            "N" : torch.zeros((16,), dtype=torch.int16),
+            "V" : torch.full((16,),-1, dtype=torch.float16),
+            "N" : 0,
             "P" : torch.zeros((16,), dtype=torch.float16),
             "V0s" : torch.zeros((16,), dtype=torch.float16),
             "placements": init_placement,
@@ -51,14 +47,59 @@ class Tree:
             "v0": torch.zeros((16,), dtype=torch.float16),
             "r_input": torch.zeros((8, 6, 6)),
             "num": 0,
+            "N0": torch.tensor([]),
+            "N_s": 0,
+            "Q1": torch.tensor([]),
+            "Q": torch.tensor([]),
+            "puct": torch.tensor([]),
+            "U": torch.tensor([]),
+            "num_pool": torch.tensor([]) 
         }
-        self.edge_pattern = edge.copy()
-        self.tree.append(edge)
+        self.node_pattern = node.copy()
+        self.tree.append(node)
+        self.node_init(0)
         output = self.forward([self.tree[0]])
-        self.tree[0].P = output[0][:-1]
-        self.tree[0].V0 = output[0][-1]
-        self.tree[0].V0s = torch.full((self.maximum_visit_count,), self.tree[0]["V0"])
+        self.tree[0]["P"] = output[0][:-1]
+        self.tree[0]["V0"] = output[0][-1]
+        self.tree[0]["V0s"] = torch.full((self.maximum_visit_count,), self.tree[0]["V0"])
         
+    def node_init(self, node_index):
+        node = self.tree[node_index]
+        
+        placement = node["placements"]
+        
+        self.gm.board = node["raw_board"].clone()
+        self.gm.board = torch.flatten(self.gm.board)
+        
+        if placement[0] >= 0:
+            self.gm.place(placement[0], placement[1])
+            #self.gm.update_pool() #not required
+        if placement[0] == -2:
+            self.gm.board = torch.full((16,), -1)
+        node["raw_board"] = self.gm.board.clone()
+        node["raw_board"] = torch.reshape(node["raw_board"], (4, 4))
+        
+        possible_num = self.gm.possible_num()
+        node["num_pool"] = torch.tensor([possible_num[x % len(possible_num)] for x in node["pool"]])
+        
+        node["V0"] = torch.tensor(0.)
+        node['P'] = torch.zeros(16)
+        
+        if torch.any(node["raw_board"] != -1):
+            input1 = F.pad(node["raw_board"],(1,1,1,1),mode="constant",value=0)
+            input2 = F.pad(node["num_pool"],(0, 2),mode="constant", value=0)
+            input2 = torch.reshape(input2,(2,2))
+            input2 = F.pad(input2,(0,4,0,4), mode="constant", value=0)
+            input = input1 + input2
+            input = input.to(torch.float16)
+            input = torch.reshape(input,(1,6,6))
+            #self.input = input.to(torch.float16)
+            input = input.to(self.device_id)
+            feather_planes = node["feather_planes"].to(self.device_id)
+            node["r_input"] = torch.cat((input, feather_planes),0)
+            node["r_input"] = node["r_input"].to(torch.float16)
+        
+            
 
     def expand_and_evaluate(self):
         #print(self.tree[-1].board)
@@ -68,28 +109,42 @@ class Tree:
         while True:
             if ((x["pre_index"] == -1 or x["N"] == self.maximum_visit_count)
                     and torch.any(x["V"] == -1) and torch.any(x["raw_board"] != -1)):
+                asdasda=1
                 self.make_leafs(x, j)
-            x["V"], x["N0"] = self.back_up(j)
-            if torch.any(x.board != -1):
-                arr0 = x.backup_calc(self.c_puct, self.maximum_visit_count)
-                j0 = self.find_leaf(j, arr0)
-                oned_V0 = torch.reshape(self.tree[j0].V0,(1,))
-                x.V0s = torch.cat((x.V0s, oned_V0), dim=0)
+            suf_nodes_index = x["suf_index"]
+            x["V"], x["N0"] = self.back_up(suf_nodes_index)
+            
+            if torch.any(x["raw_board"] != -1):
+                arr0 = self.backup_calc(x["index"], self.c_puct, self.maximum_visit_count)
+                leaf_index = suf_nodes_index[arr0]
+                j0 = leaf_index
+                oned_V0 = torch.reshape(self.tree[j0]["V0"],(1,))
+                x['V0s'] = torch.cat((x['V0s'], oned_V0), dim=0)
                 x = self.tree[j0]
-                x.N += 1
-            j = x.order
-            if (x.N < self.maximum_visit_count
-                    or torch.any(x.board == -1)):
+                x["N"] += 1
+            j = x['index']
+            if (x["N"] < self.maximum_visit_count
+                    or torch.any(x["raw_board"] == -1)):
                 break
+            
+    def backup_calc(self, node_index, c, visit_count):
+        node = self.tree[node_index]
+        node["N_s"] = sum(node["N0"])
+        node["Q1"] = node["V"] / (node["N_s"] + visit_count)
+        node["Q"] = node["Q1"] / max(node["Q1"])
+        node["puct"] = (node["N_s"] ** 1/2    ) / (torch.ones(16) + node["N0"])
+        node["U"] = c * node["P"] * node["puct"]
 
-    def make_leafs_prop(self, edge):
-        board_1 = torch.reshape(edge["raw_board"], (16, ))
+        return torch.argmax(node["U"] + node["Q"])
+
+    def make_leafs_prop(self, node):
+        board_1 = torch.reshape(node["raw_board"], (16, ))
         raw_sliced = 1 - torch.tensor([min(x,1) for x in board_1])
         placement_list = []
         for i, x in enumerate(raw_sliced):
-            placement = -2, -2, edge["raw_board"]
+            placement = -2, -2, node["raw_board"]
             if x != 0:
-                placement = i, edge["num_pool"][0], edge["raw_board"]
+                placement = i, node["num_pool"][0], node["raw_board"]
             placement_list.append(placement)
         return placement_list, raw_sliced
 
@@ -98,46 +153,65 @@ class Tree:
         ar = father['ar']
         init_pool = self.pool[ar:ar+2]
         feather_planes = father['r_input'][:-1]
+        suf_index = torch.zeros((16,), dtype=torch.int16)
+        
+        father_P = self.tree[father["index"]]["P"]
+        father_P = father_P * raw_sliced
+        
         for i,x in enumerate(prop):
-            edge_ = self.edge_pattern.copy()
+            node_ = self.node_pattern.copy()
             
-            edge_["placement"] = x[:2]
-            edge_["pool"] = init_pool
-            edge_["pre_index"] = point
-            edge_["num"] = i
-            edge_["ar"] = ar + 1
-            edge_["raw_board"] = x[2]
-            edge_["feather_planes"] = feather_planes
-            edge_["index"] = len(self.tree)
-
-            self.tree.append(edge_)
+            node_["placement"] = x[:2]
+            node_["pool"] = init_pool
+            node_["pre_index"] = point
+            node_["num"] = i
+            node_["ar"] = ar + 1
+            node_["raw_board"] = x[2]
+            node_["feather_planes"] = feather_planes
+            node_["index"] = len(self.tree)
+            
+            suf_index[i] = node_["index"]
+            
+            self.tree.append(node_)
+            self.node_init(node_["index"])
+        
+        self.tree[father["index"]]["suf_index"] = suf_index
+        
         output_ = self.forward(self.tree[-len(prop):])
         for i in range(1, len(prop) + 1):
             self.tree[-i]["P"] = output_[-i][:-1]
             self.tree[-i]["V0"] = output_[-i][-1]
             self.tree[-i]["V0s"] = torch.full((self.maximum_visit_count,), self.tree[-i]["V0"])
+    
     def restart(self, select):
         temp_tree = []
-        list0 = [self.tree[select+1].order]
+        list0 = [self.tree[select+1]["index"]]
+        mapping = [] #(raw_index, new_index)
         while True:
-            for i,x in enumerate(list0):
-                if x != 0:
-                    new_list = [y.order for y in self.tree if y.point == x]
-                    list0[i] = 0
+            for i, x in enumerate(list0):
+                if x != -1:
+                    father_node = self.tree[x]
+                    suf_indexes = father_node["suf_index"]
+                    new_list = [self.tree[j] for j in suf_indexes] #node
+                    list0[i] = -1
                     list0 += new_list
-                    node0 = [y for y in self.tree if y.order == x]
-                    temp_tree.append(node0[0])
+                    node0 = self.tree[x]
+                    temp_tree.append(node0)
+                    mapping.append((node0["index"], len(temp_tree)-1))
             if not any(list0):
                 break
         self.tree = temp_tree
 
-    def back_up(self, point):
+    def back_up(self, suf_indexes):
         V = torch.zeros(16)
         N = torch.zeros(16)
-        for i in self.tree:
-            if i.point == point and torch.any(i.board!=-1):        #查找所有合法叶节点
-                V[i.num] = sum(i.V0s)
-                N[i.num] = i.N
+        
+        for i in suf_indexes:
+            node = self.tree[i]
+            if torch.any(node["raw_board"] != -1):
+                V[node["num"]] = sum(node["V0s"])
+                N[node["num"]] = node["N"]
+                
         return V, N
 
     def find_leaf(self, point, num):
@@ -304,16 +378,16 @@ class AlphaTriple:
         p_bar = tqdm.tqdm(total=TOTAL_VISIT_COUNT - saved, desc="self_play_on_" + self.device_name, 
                           position=self.deivce_index, leave=False)
         while True:
-            N0 = self.tree.tree[0].N0
+            N0 = self.tree.tree[0]['N0']
             self.tree.expand_and_evaluate()
             with tqdm.tqdm.get_lock():
                 p_bar.update(1)
                 if  sum(N0) > TOTAL_VISIT_COUNT:
-                    temp = 1 if self.tree.tree[0].ar < 30 else 0
+                    temp = 1 if self.tree.tree[0]['ar'] < 30 else 0
                     select_move = self.select_action(N0, temp)
                     self.tree.restart(select_move)
                     p_bar.close()
-                    return int(sum(self.tree.tree[0].N0)), select_move
+                    return int(sum(self.tree.tree[0]['N0'])), select_move
         
     def self_play(self):
         saved_move = 0
@@ -323,14 +397,14 @@ class AlphaTriple:
         grid_history = []
         while True:
             tree_root = self.tree.tree[0]
-            bd = tree_root.board
+            bd = tree_root['raw_board']
             if not torch.any(bd==0):
                 break
             saved_move, move = self.single_move(saved_move)
-            pi = tree_root.N0 / sum(tree_root.N0)
-            #dict0 = {"board": tree_root.r_input.tolist(), "Pi": pi.tolist(), "P": 0}
+            pi = tree_root["N0"] / sum(tree_root["N0"])
+            #dict0 = {"board": tree_root["r_input"].tolist(), "Pi": pi.tolist(), "P": 0}
             click_history.append(int(move))
-            grid_history.append(tree_root.num_pool.tolist())
+            grid_history.append(tree_root["num_pool"].tolist())
             pi_history.append(pi.tolist())
             board_history.append(bd.tolist())
             
