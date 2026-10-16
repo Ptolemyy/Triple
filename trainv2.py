@@ -198,7 +198,7 @@ class Tree:
                     node0 = self.tree[x]
                     temp_tree.append(node0)
                     mapping.append((node0["index"], len(temp_tree)-1))
-            if not any(list0 != -1):
+            if all(x == -1 for x in list0):
                 break
         for i in temp_tree:
             raw_index = i["index"].copy()
