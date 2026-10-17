@@ -133,7 +133,7 @@ class Tree:
                 break
 
     def make_leafs(self, father, point):
-        prop = father.make_leafs_prop()
+        prop = father.make_leafs_prop() #clear P slice
         ar = father.ar
         init_pool = self.pool[ar:ar+2]
         feather_planes = father.r_input[:-1]
@@ -315,7 +315,10 @@ class AlphaTriple:
         self.device_list = device_list
         self.deivce_index = device_index
         self.model_index = model_index
-        self.device = self.device_list[self.deivce_index]
+        if device_list == torch.device("cpu"):
+            self.device = device_list
+        else:
+            self.device = self.device_list[self.deivce_index]
         self.resnet = ResNet()
         self.model_path = model_real_path
         if self.model_path is not None:
@@ -369,6 +372,7 @@ class AlphaTriple:
             grid_history.append(tree_root.num_pool.tolist())
             pi_history.append(pi.tolist())
             board_history.append(bd.tolist())
+            print(bd)
             
         experience = {
                 "final_board": board_history[-1],

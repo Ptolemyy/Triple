@@ -42,7 +42,7 @@ class Tree:
             "P" : torch.zeros((16,), dtype=torch.float16),
             "V0s" : torch.zeros((16,), dtype=torch.float16),
             "placements": init_placement,
-            "suf_index": torch.zeros((16,), dtype=torch.int16),
+            "suf_index": torch.full((16,), -1, dtype=torch.int16),
             "p0": torch.zeros((16,16), dtype=torch.float16),
             "v0": torch.zeros((16,), dtype=torch.float16),
             "r_input": torch.zeros((8, 6, 6)),
@@ -109,7 +109,6 @@ class Tree:
         while True:
             if ((x["pre_index"] == -1 or x["N"] == self.maximum_visit_count)
                     and torch.any(x["V"] == -1) and torch.any(x["raw_board"] != -1)):
-                asdasda=1
                 self.make_leafs(x, j)
             suf_nodes_index = x["suf_index"]
             x["V"], x["N0"] = self.back_up(suf_nodes_index)
@@ -155,13 +154,12 @@ class Tree:
         feather_planes = father['r_input'][:-1]
         suf_index = torch.zeros((16,), dtype=torch.int16)
         
-        father_P = self.tree[father["index"]]["P"]
-        father_P = father_P * raw_sliced
+        self.tree[father["index"]]["P"] = self.tree[father["index"]]["P"] * raw_sliced
         
         for i,x in enumerate(prop):
             node_ = self.node_pattern.copy()
             
-            node_["placement"] = x[:2]
+            node_["placements"] = x[:2]
             node_["pool"] = init_pool
             node_["pre_index"] = point
             node_["num"] = i
@@ -189,26 +187,27 @@ class Tree:
         mapping = [] #(raw_index, new_index)
         while True:
             for i, x in enumerate(list0):
-                if x != -1:
+                if x != 0:
                     father_node = self.tree[x]
                     suf_indexes = father_node["suf_index"]
-                    new_list = [self.tree[j]['index'] for j in suf_indexes] #node
-                    list0[i] = -1
+                    new_list = [self.tree[j]['index'] for j in suf_indexes if torch.any(suf_indexes != -1) ] #node
+                    list0[i] = 0
                     list0 += new_list
                     node0 = self.tree[x]
                     temp_tree.append(node0)
-                    mapping.append((node0["index"], len(temp_tree)-1))
-            if not any(list0 != -1):
+                    mapping.append(node0["index"])
+            if not any(list0):
                 break
         for i in temp_tree:
-            raw_index = i["index"].copy()
-            raw_pre_index = i["pre_index"].copy()
-            raw_suf_index = i["suf_index"].copy()
+            raw_index = i["index"]
+            raw_pre_index = i["pre_index"]
+            raw_suf_index = i["suf_index"]
             
             i["index"] = mapping.index(raw_index)
-            i['pre_index'] = mapping.index(raw_pre_index)
+            #i['pre_index'] = mapping.index(raw_pre_index)
             
-            i['suf_index'] = torch.tensor([mapping.index(x) for x in raw_suf_index])
+            suf_index_map = torch.tensor([mapping.index(int(x)) for x in raw_suf_index]) if torch.any(raw_suf_index != -1) else torch.full((16,), -1, dtype=torch.int16)
+            i['suf_index'] = suf_index_map
             
         self.tree = temp_tree
 
@@ -363,7 +362,10 @@ class AlphaTriple:
         self.device_list = device_list
         self.deivce_index = device_index
         self.model_index = model_index
-        self.device = self.device_list[self.deivce_index]
+        if device_list == torch.device("cpu"):
+            self.device = device_list
+        else:
+            self.device = self.device_list[self.deivce_index]
         self.resnet = ResNet()
         self.model_path = model_real_path
         if self.model_path is not None:
@@ -417,6 +419,7 @@ class AlphaTriple:
             grid_history.append(tree_root["num_pool"].tolist())
             pi_history.append(pi.tolist())
             board_history.append(bd.tolist())
+            print(bd)
             
         experience = {
                 "final_board": board_history[-1],
