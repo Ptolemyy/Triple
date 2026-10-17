@@ -19,15 +19,14 @@ class Tree:
         self.tree = []
         self.resnet = resnet
         self.c_puct = C_PUCT
-        self.epsi = EPSI
         self.gm = Triple()
         torch.manual_seed(int(time.time()))
-        self.pool = torch.randint(10,99,(3000,))
+        #self.pool = torch.randint(10,99,(2,)) random incoming block
         init_board = torch.tensor([[0,0,0,0],
                         [0,0,0,0],
                         [0,0,0,0],
                         [0,0,0,0]],dtype=torch.float16)
-        init_pool = self.pool[:2]
+        init_pool = torch.randint(10,99,(2,))
         init_placement = torch.full((2, ), -1)
         node = {
             "index": 0,
@@ -151,7 +150,7 @@ class Tree:
     def expand_and_evaluate(self, father, point):
         prop, raw_sliced = self.make_leafs_prop(father)
         ar = father['ar']
-        init_pool = self.pool[ar:ar+2]
+        init_pool = torch.randint(10,99,(2,))
         feather_planes = father['r_input'][:-1]
         suf_index = torch.zeros((16,), dtype=torch.int16)
         
@@ -234,7 +233,7 @@ class Tree:
         forward_list = []
         batch_input_ = []
         ar = nodes[0]["ar"]
-        alpha = torch.full((16,), 0.03)
+        
         output_list = [torch.zeros(17, ) for _ in range(len(nodes))]
         for index, node in enumerate(nodes):
             if torch.any(node["raw_board"] != -1):
@@ -248,12 +247,7 @@ class Tree:
             self.resnet.eval()
             self.outputs = self.resnet(batch_input_)
             self.outputs = self.outputs.cpu()
-        for output in self.outputs:
-            if ar >= 30:
-                dirichlet_dist  = torch.distributions.Dirichlet(alpha)
-                eta = dirichlet_dist.sample()
-                output[:-1] = (1 - self.epsi) * output[:-1] + self.epsi * eta
-            output[-1] = 1 / output[-1]
+
         index_ = 0
         for index, output in enumerate(output_list):
             if index in forward_list:
@@ -279,15 +273,15 @@ class TripleDataset(Dataset):
     def __getitem__(self, idx):
         click_history = self.data[idx]["click_history"]
         grid_history = self.data[idx]["grid_history"]
-        img = self.feather_planes_gen(click_history, grid_history)
+        img, score_now = self.feather_planes_gen(click_history, grid_history)
         img = torch.tensor(img,dtype=torch.float32)
-        target_pi = self.data[idx]["Pi"]
+        target_pi = self.data[idx]["pi_history"]
         target_pi = torch.tensor(target_pi,dtype=torch.float32)
-        target_p = self.data[idx]["P"]
-        target_p = torch.tensor([target_p],dtype=torch.float32)
-        target_p = 1 / target_p
-        target = torch.cat((target_pi, target_p), dim=0)
-        return img, target
+        final_P = self.data[idx]["final_P"]
+        target_P = (final_P - score_now) / CO_P
+        target_P = torch.tensor([target_P],dtype=torch.float32)
+        target = torch.cat((target_pi, target_P), dim=0)
+        return img, target  
 
     def feather_planes_gen(self, click_history, grid_history):
         gen_game = Triple()
@@ -296,9 +290,8 @@ class TripleDataset(Dataset):
         feather_planes = []
         for index, value in placement:
             gen_game.num_pool = value
-            gen_game.place(index, value[0])
-            input1 = F.pad(self.board,(1,1,1,1),mode="constant",value=0)
-            input2 = F.pad(self.num_pool,(0, 2),mode="constant", value=0)
+            input1 = F.pad(gen_game.board,(1,1,1,1),mode="constant",value=0)
+            input2 = F.pad(gen_game.num_pool,(0, 2),mode="constant", value=0)
             input2 = torch.reshape(input2,(2,2))
             input2 = F.pad(input2,(0,4,0,4), mode="constant", value=0)
             input = input1 + input2
@@ -307,7 +300,11 @@ class TripleDataset(Dataset):
             feather_plane = torch.cat(input, last_feather_plane, 0)
             last_feather_plane = feather_plane[:-1]
             feather_planes.append(feather_plane)
-        return feather_planes
+
+            gen_game.place(index, value[0])
+            score_now = gen_game.score
+        
+        return feather_planes, score_now
     
     def remove_duplicates(self, raw):
         data = []
@@ -329,7 +326,7 @@ class TripleDataset(Dataset):
             if (not i in log) and i != "log.json":
                 log.append(i)
                 with open("data/" + i, "r") as f:
-                    data += json.loads(f.read())
+                    data.append(json.loads(f.read()))
         with open("data/log.json", 'w') as f:
             f.write(json.dumps(log))
         data = self.remove_duplicates(data)
@@ -347,12 +344,12 @@ def train(dataset0):
     for epoch in range(epochs):
         for data in tqdm.tqdm(dataloader):
             img, target = data
-            img = img[0].cuda()
+            img = img.cuda()
             target = target.cuda()
 
             outputs = train_resnet(img)
-            result_loss1 = loss1(outputs[:,16], target[:,16])
-            result_loss2 = loss2(outputs[:,:16], target[:,:16])
+            result_loss1 = loss1(outputs[:, 16], target[:,16])
+            result_loss2 = loss2(outputs[:, :16], target[:,:16])
 
             result_loss = (result_loss1 + result_loss2)
             optim.zero_grad()
@@ -393,11 +390,18 @@ class AlphaTriple:
                           position=self.deivce_index, leave=False)
         while True:
             N0 = self.tree.tree[0]['N0']
+            root_P = self.tree.tree[0]["P"]
+
+            if self.tree.tree[0]["ar"] > EXPLORATION_THRESHOLD:
+                dirichlet_dist  = torch.distributions.Dirichlet(ALPHA)
+                eta = dirichlet_dist.sample()
+                root_P = (1 - EPSI) * root_P + EPSI * eta
+
             self.tree.select()
             with tqdm.tqdm.get_lock():
                 p_bar.update(1)
                 if  sum(N0) > TOTAL_VISIT_COUNT:
-                    temp = 1 if self.tree.tree[0]['ar'] < 30 else 0
+                    temp = 1 if self.tree.tree[0]['ar'] < EXPLORATION_THRESHOLD else 0
                     select_move = self.select_action(N0, temp)
                     self.tree.restart(select_move)
                     p_bar.close()
@@ -429,10 +433,10 @@ class AlphaTriple:
                 "grid_history": grid_history,
                 "pi_history": pi_history,
                 "steps": len(click_history),
-                "P":0
+                "final_P":0
         }
         score = score_count(experience)
-        experience["P"] = int(score)
+        experience["final_P"] = int(score)
         name = time.asctime().replace(" ", "_")
         name = name.replace(":", "_")
         name += "of_model_" + str(self.model_index)
@@ -469,9 +473,12 @@ def generator(epochs, device_count):#EPOCH = TASK_PER_GPU * DEVICE_COUNT * STEPS
 
 C_PUCT = 3.0
 EPSI = 0.25
+CO_P = 1000
 TOTAL_VISIT_COUNT = 800
 TASK_PER_DEVICE = 1
 MAXIMUM_DEVICE_COUNT = 1
+EXPLORATION_THRESHOLD = 30
+ALPHA = torch.full((16,), 0.03)
 
 if __name__ == "__main__":
     model_name = "demo"

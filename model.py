@@ -35,7 +35,6 @@ class policy_head(nn.Module):
             ReLU(),
             Flatten(1),
             Linear(2 * 16, 16),
-            Softmax(dim=1)
         )
     def forward(self, x):
         x = self.net(x)
@@ -52,7 +51,6 @@ class value_head(nn.Module):
             Linear(16, 256),
             ReLU(),
             Linear(256, 1),
-            Sigmoid()
         )
     def forward(self, x):
         x = self.net(x)
