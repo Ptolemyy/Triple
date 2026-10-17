@@ -146,6 +146,6 @@ def generate_device(model_path, device_index,is_half, batch_size):
             results = list(zip(seeds, outputs))
             for seed, output in results:
                 result_queue.put((seed, output))
-                
+            
             if stop_after_batch:
                 break
