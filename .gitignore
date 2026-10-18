@@ -2,3 +2,8 @@ __pycache__
 .vscode
 
 model/
+.idea
+media/
+data/
+triple_web/__pycache__/
+triple_web/game_records/
