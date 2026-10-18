@@ -28,13 +28,13 @@ class Tree:
                         [0,0,0,0]],dtype=torch.float16)
         init_pool = torch.randint(10,99,(2,))
         init_placement = torch.full((2, ), -1)
+        self.ln3_board = torch.log(torch.full((4, 4), 3))
         node = {
             "index": 0,
             "ar": 0,
             "pre_index": -1,
             "raw_board": init_board,
             "pool": init_pool,
-            "feather_planes": torch.zeros((7,6,6), dtype=torch.float16),
             "N" : 0,
             "P" : torch.zeros((16,), dtype=torch.float16),
             "placements": init_placement,
@@ -49,7 +49,7 @@ class Tree:
             "Q": torch.zeros((16, ), dtype=torch.float16),
             "puct": torch.tensor([]),
             "U": torch.tensor([]),
-            "num_pool": torch.tensor([]),
+            "num_pool": torch.ones((2,)),
             "W": torch.zeros((16,), dtype=torch.float16),
             "raw_sliced": torch.ones((16,), dtype=torch.float16)
         }
@@ -77,7 +77,7 @@ class Tree:
         node["raw_board"] = torch.reshape(node["raw_board"], (4, 4))
         
         possible_num = self.gm.possible_num()
-        node["num_pool"] = torch.tensor([possible_num[x % len(possible_num)] for x in node["pool"]])
+        node["num_pool"][1] = possible_num[node["pool"][1] % len(possible_num)]
         
         node["V0"] = torch.tensor(0.)
         node['P'] = torch.zeros(16)
@@ -87,17 +87,15 @@ class Tree:
         node["Q"] = torch.zeros(16, dtype=torch.float32)
         
         if torch.any(node["raw_board"] != -1):
-            input1 = F.pad(node["raw_board"],(1,1,1,1),mode="constant",value=0)
-            input2 = F.pad(node["num_pool"],(0, 2),mode="constant", value=0)
-            input2 = torch.reshape(input2,(2,2))
-            input2 = F.pad(input2,(0,4,0,4), mode="constant", value=0)
-            input = input1 + input2
-            input = input.to(torch.float16)
-            input = torch.reshape(input,(1,6,6))
-            #self.input = input.to(torch.float16)
+            ln_board = torch.log(node["raw_board"])
+            log_3_board = ln_board / self.ln3_board
+            raw_sliced_board = torch.reshape(node['raw_sliced'],(4,4))
+            num_pool_0_board = torch.full((4,4),node["num_pool"][0])
+            num_pool_1_board = torch.full((4,4),node["num_pool"][1])
+            
+            input = torch.stack([log_3_board, raw_sliced_board, num_pool_0_board, num_pool_1_board])
+            self.input = input.to(torch.float16)
             input = input.to(self.device_id)
-            feather_planes = node["feather_planes"].to(self.device_id)
-            node["r_input"] = torch.cat((input, feather_planes),0)
             node["r_input"] = node["r_input"].to(torch.float16)
         
             
@@ -151,7 +149,6 @@ class Tree:
         prop, raw_sliced = self.make_leafs_prop(father)
         ar = father['ar']
         init_pool = torch.randint(10,99,(2,))
-        feather_planes = father['r_input'][:-1]
         suf_index = torch.zeros((16,), dtype=torch.int16)
         
         self.tree[father["index"]]["P"] = self.tree[father["index"]]["P"] * raw_sliced
@@ -166,8 +163,8 @@ class Tree:
             node_["num"] = i
             node_["ar"] = ar + 1
             node_["raw_board"] = x[2]
-            node_["feather_planes"] = feather_planes
             node_["index"] = len(self.tree)
+            node_["num_pool"][0] = father['num_pool'][1]
             
             suf_index[i] = node_["index"]
             

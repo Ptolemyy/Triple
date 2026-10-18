@@ -60,7 +60,7 @@ class ResNet(nn.Module):
     def __init__(self, channels = 256, length = 40):
         super(ResNet, self).__init__()
         self.Convolutional = Sequential(
-            Conv2d(8, channels, 3, stride=1, padding=0),
+            Conv2d(4, channels, 3, stride=1, padding=1),
             BatchNorm2d(channels),
             ReLU()
         )
