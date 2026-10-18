@@ -357,18 +357,19 @@ def train(dataset0):
             optim.step()
 
 class AlphaTriple:
-    def __init__(self, device_list, device_index):
+    def __init__(self, device_list, device_index, model_real_path):
         self.device_list = device_list
         self.deivce_index = device_index
-        #self.model_index = model_index
+        self.model_real_path = model_real_path
+        
         if device_list == torch.device("cpu"):
             self.device = device_list
         else:
             self.device = self.device_list[self.deivce_index]
         self.resnet = ResNet()
-        #self.model_path = model_real_path
-        #if self.model_path is not None:
-        #    self.resnet.load_state_dict(torch.load(self.model_path))
+
+        if self.model_real_path is not None:
+            self.resnet.load_state_dict(torch.load(self.model_path))
 
         self.resnet = self.resnet.to(self.device)
         self.resnet = self.resnet.half()
@@ -448,12 +449,12 @@ def worker_init_fn(worker_id):
     torch.manual_seed(seed)
 
 def run(arg):
-    steps, device_list, device_index = arg
+    steps, device_list, device_index, model_real_path= arg
     for i in range(steps):
-        alphatriple = AlphaTriple(device_list=device_list, device_index=device_index)
+        alphatriple = AlphaTriple(device_list=device_list, device_index=device_index, model_real_path=model_real_path)
         alphatriple.self_play()
 
-def generator(epochs, device_count):#EPOCH = TASK_PER_GPU * DEVICE_COUNT * STEPS_PER_DEVICE
+def generator(epochs, device_count, model_real_path):#EPOCH = TASK_PER_GPU * DEVICE_COUNT * STEPS_PER_DEVICE
     if device_count != 0:
         device_list = [torch.device(f"cuda:{i}") for i in range(device_count)]
         print(f"Using {device_count} GPUs.")
@@ -464,12 +465,12 @@ def generator(epochs, device_count):#EPOCH = TASK_PER_GPU * DEVICE_COUNT * STEPS
         device_count = 1
     if device_count > 1: #多进程
         steps_per_device = epochs // device_count // TASK_PER_DEVICE
-        tasks = [(steps_per_device, device_list, i) for i in range(device_count * TASK_PER_DEVICE)]
+        tasks = [(steps_per_device, device_list, i, model_real_path) for i in range(device_count * TASK_PER_DEVICE)]
         with multiprocessing.Pool(processes=device_count * TASK_PER_DEVICE, initializer=worker_init_fn, initargs=(1,)) as po:
             po.map(run, tasks)
         
     else: #单进程
-        run((epochs, device_list, 0))  
+        run((epochs, device_list, 0, model_real_path))  
 
 C_PUCT = 3.0
 EPSI = 0.25
@@ -498,7 +499,7 @@ if __name__ == "__main__":
         model_index = args.selection
         generate_epoch = args.epoch
         model_real_path = model_path + model_name + str(model_index) + ".pt" if model_index > 0 else None
-        generator(generate_epoch, device_count)
+        generator(generate_epoch, device_count, model_real_path)
         
     if args.mode == 'train':
         index = args.selection
