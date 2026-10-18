@@ -10,7 +10,7 @@ import json, os, argparse
 import multiprocessing
 import torch.nn.functional as F
 from model import ResNet
-
+import copy
 
 class Tree:
     def __init__(self, resnet, device_id):
@@ -18,17 +18,15 @@ class Tree:
         self.device_id = device_id
         self.tree = []
         self.resnet = resnet
-        self.maximum_visit_count = MAXIMUM_VISIT_COUNT
         self.c_puct = C_PUCT
-        self.epsi = EPSI
         self.gm = Triple()
         torch.manual_seed(int(time.time()))
-        self.pool = torch.randint(10,99,(3000,))
+        #self.pool = torch.randint(10,99,(2,)) random incoming block
         init_board = torch.tensor([[0,0,0,0],
                         [0,0,0,0],
                         [0,0,0,0],
                         [0,0,0,0]],dtype=torch.float16)
-        init_pool = self.pool[:2]
+        init_pool = torch.randint(10,99,(2,))
         init_placement = torch.full((2, ), -1)
         node = {
             "index": 0,
@@ -37,31 +35,30 @@ class Tree:
             "raw_board": init_board,
             "pool": init_pool,
             "feather_planes": torch.zeros((7,6,6), dtype=torch.float16),
-            "V" : torch.full((16,),-1, dtype=torch.float16),
             "N" : 0,
             "P" : torch.zeros((16,), dtype=torch.float16),
-            "V0s" : torch.zeros((16,), dtype=torch.float16),
             "placements": init_placement,
-            "suf_index": torch.zeros((16,), dtype=torch.int16),
+            "suf_index": torch.full((16,), -1, dtype=torch.int16),
             "p0": torch.zeros((16,16), dtype=torch.float16),
             "v0": torch.zeros((16,), dtype=torch.float16),
             "r_input": torch.zeros((8, 6, 6)),
             "num": 0,
-            "N0": torch.tensor([]),
+            "N0": torch.zeros((16, ), dtype=torch.float16),
             "N_s": 0,
             "Q1": torch.tensor([]),
-            "Q": torch.tensor([]),
+            "Q": torch.zeros((16, ), dtype=torch.float16),
             "puct": torch.tensor([]),
             "U": torch.tensor([]),
-            "num_pool": torch.tensor([]) 
+            "num_pool": torch.tensor([]),
+            "W": torch.zeros((16,), dtype=torch.float16),
+            "raw_sliced": torch.ones((16,), dtype=torch.float16)
         }
-        self.node_pattern = node.copy()
+        self.node_pattern = copy.deepcopy(node)
         self.tree.append(node)
         self.node_init(0)
         output = self.forward([self.tree[0]])
         self.tree[0]["P"] = output[0][:-1]
         self.tree[0]["V0"] = output[0][-1]
-        self.tree[0]["V0s"] = torch.full((self.maximum_visit_count,), self.tree[0]["V0"])
         
     def node_init(self, node_index):
         node = self.tree[node_index]
@@ -84,6 +81,10 @@ class Tree:
         
         node["V0"] = torch.tensor(0.)
         node['P'] = torch.zeros(16)
+
+        node["N0"] = torch.zeros(16, dtype=torch.int64)
+        node["W"] = torch.zeros(16, dtype=torch.float32)
+        node["Q"] = torch.zeros(16, dtype=torch.float32)
         
         if torch.any(node["raw_board"] != -1):
             input1 = F.pad(node["raw_board"],(1,1,1,1),mode="constant",value=0)
@@ -101,41 +102,38 @@ class Tree:
         
             
 
-    def expand_and_evaluate(self):
+    def select(self):
         #print(self.tree[-1].board)
         x = self.tree[0]
         j = x['index']
         x['pre_index'] = -1
+        expanded = False
         while True:
-            if ((x["pre_index"] == -1 or x["N"] == self.maximum_visit_count)
-                    and torch.any(x["V"] == -1) and torch.any(x["raw_board"] != -1)):
-                asdasda=1
-                self.make_leafs(x, j)
+            if (x["N"] == 0 and torch.any(x["raw_board"] != -1)):
+                self.expand_and_evaluate(x, j)
+                expanded = True
             suf_nodes_index = x["suf_index"]
-            x["V"], x["N0"] = self.back_up(suf_nodes_index)
             
             if torch.any(x["raw_board"] != -1):
-                arr0 = self.backup_calc(x["index"], self.c_puct, self.maximum_visit_count)
+                arr0 = self.select_calc(x["index"], self.c_puct)
                 leaf_index = suf_nodes_index[arr0]
                 j0 = leaf_index
-                oned_V0 = torch.reshape(self.tree[j0]["V0"],(1,))
-                x['V0s'] = torch.cat((x['V0s'], oned_V0), dim=0)
                 x = self.tree[j0]
-                x["N"] += 1
             j = x['index']
-            if (x["N"] < self.maximum_visit_count
-                    or torch.any(x["raw_board"] == -1)):
+            if expanded or torch.any(x["raw_board"] == -1):
                 break
+        self.back_up(j)
+        
             
-    def backup_calc(self, node_index, c, visit_count):
+    def select_calc(self, node_index, c):
         node = self.tree[node_index]
-        node["N_s"] = sum(node["N0"])
-        node["Q1"] = node["V"] / (node["N_s"] + visit_count)
-        node["Q"] = node["Q1"] / max(node["Q1"])
-        node["puct"] = (node["N_s"] ** 1/2    ) / (torch.ones(16) + node["N0"])
+        node["Q"] = node['W'] / node["N0"]
+        node["Q"] = torch.nan_to_num(node["Q"], nan=0)
+        node["puct"] = (node["N"] ** (1/2)    ) / (torch.ones(16) + node["N0"])
         node["U"] = c * node["P"] * node["puct"]
+        minus_inf = torch.tensor([-torch.inf if i == 0 else 0 for i in node["raw_sliced"]])
 
-        return torch.argmax(node["U"] + node["Q"])
+        return torch.argmax(node["U"] + node["Q"] + minus_inf)
 
     def make_leafs_prop(self, node):
         board_1 = torch.reshape(node["raw_board"], (16, ))
@@ -146,22 +144,23 @@ class Tree:
             if x != 0:
                 placement = i, node["num_pool"][0], node["raw_board"]
             placement_list.append(placement)
+        
         return placement_list, raw_sliced
 
-    def make_leafs(self, father, point):
+    def expand_and_evaluate(self, father, point):
         prop, raw_sliced = self.make_leafs_prop(father)
         ar = father['ar']
-        init_pool = self.pool[ar:ar+2]
+        init_pool = torch.randint(10,99,(2,))
         feather_planes = father['r_input'][:-1]
         suf_index = torch.zeros((16,), dtype=torch.int16)
         
-        father_P = self.tree[father["index"]]["P"]
-        father_P = father_P * raw_sliced
+        self.tree[father["index"]]["P"] = self.tree[father["index"]]["P"] * raw_sliced
+        self.tree[father["index"]]["raw_sliced"] = raw_sliced
         
         for i,x in enumerate(prop):
-            node_ = self.node_pattern.copy()
+            node_ = copy.deepcopy(self.node_pattern)
             
-            node_["placement"] = x[:2]
+            node_["placements"] = x[:2]
             node_["pool"] = init_pool
             node_["pre_index"] = point
             node_["num"] = i
@@ -181,62 +180,63 @@ class Tree:
         for i in range(1, len(prop) + 1):
             self.tree[-i]["P"] = output_[-i][:-1]
             self.tree[-i]["V0"] = output_[-i][-1]
-            self.tree[-i]["V0s"] = torch.full((self.maximum_visit_count,), self.tree[-i]["V0"])
-    
-    def restart(self, select):
+
+    def restart(self, select_calc):
         temp_tree = []
-        list0 = [self.tree[select+1]["index"]]
+        list0 = [self.tree[select_calc+1]["index"]]
         mapping = [] #(raw_index, new_index)
         while True:
             for i, x in enumerate(list0):
-                if x != -1:
+                if x != 0:
                     father_node = self.tree[x]
                     suf_indexes = father_node["suf_index"]
-                    new_list = [self.tree[j]['index'] for j in suf_indexes] #node
-                    list0[i] = -1
+                    new_list = [self.tree[j]['index'] for j in suf_indexes if torch.any(suf_indexes != -1) ] #node
+                    list0[i] = 0
                     list0 += new_list
                     node0 = self.tree[x]
                     temp_tree.append(node0)
-                    mapping.append((node0["index"], len(temp_tree)-1))
-            if all(x == -1 for x in list0):
+                    mapping.append(node0["index"])
+            if not any(list0):
                 break
+        mapping.append(0)
         for i in temp_tree:
-            raw_index = i["index"].copy()
-            raw_pre_index = i["pre_index"].copy()
-            raw_suf_index = i["suf_index"].copy()
+            raw_index = i["index"]
+            raw_pre_index = i["pre_index"]
+            raw_suf_index = i["suf_index"]
             
             i["index"] = mapping.index(raw_index)
             i['pre_index'] = mapping.index(raw_pre_index)
             
-            i['suf_index'] = torch.tensor([mapping.index(x) for x in raw_suf_index])
-            
+            suf_index_map = torch.tensor([mapping.index(int(x)) for x in raw_suf_index]) if torch.any(raw_suf_index != -1) else torch.full((16,), -1, dtype=torch.int16)
+            i['suf_index'] = suf_index_map
+        temp_tree[0]["pre_index"] = -1
         self.tree = temp_tree
 
-    def back_up(self, suf_indexes):
-        V = torch.zeros(16)
-        N = torch.zeros(16)
+    def back_up(self, leaf_index):
+        leaf_node = self.tree[leaf_index]
+        leaf_v = leaf_node["V0"]
+        #leaf_node["N"] += 1 #update leaf node 
         
-        for i in suf_indexes:
-            node = self.tree[i]
-            if torch.any(node["raw_board"] != -1):
-                V[node["num"]] = sum(node["V0s"])
-                N[node["num"]] = node["N"]
-                
-        return V, N
-
-    def find_leaf(self, point, num):
-        for i, x in enumerate(self.tree):
-            if x.point == point and x.num == num:
-                return i
-    
+        node_num = leaf_node["num"]
+        j = leaf_node["pre_index"] #initialized by pre leaf node index
+        
+        while j != -1:
+            node = self.tree[j]
+            node["N"] += 1 #N update
+            node["N0"][node_num] += 1 #update N0
+            node["W"][node_num] += leaf_v # update W
+            
+            j = node['pre_index']
+            node_num = node["num"]
+                 
     def forward(self, nodes):
         forward_list = []
         batch_input_ = []
         ar = nodes[0]["ar"]
-        alpha = torch.full((16,), 0.03)
+        
         output_list = [torch.zeros(17, ) for _ in range(len(nodes))]
         for index, node in enumerate(nodes):
-            if torch.any(node["raw_board"]!=-1):
+            if torch.any(node["raw_board"] != -1):
                 forward_list.append(index)
                 batch_input_.append(node["r_input"])
         if len(batch_input_) == 0:
@@ -247,12 +247,7 @@ class Tree:
             self.resnet.eval()
             self.outputs = self.resnet(batch_input_)
             self.outputs = self.outputs.cpu()
-        for output in self.outputs:
-            if ar >= 30:
-                dirichlet_dist  = torch.distributions.Dirichlet(alpha)
-                eta = dirichlet_dist.sample()
-                output[:-1] = (1 - self.epsi) * output[:-1] + self.epsi * eta
-            output[-1] = 1 / output[-1]
+
         index_ = 0
         for index, output in enumerate(output_list):
             if index in forward_list:
@@ -278,15 +273,15 @@ class TripleDataset(Dataset):
     def __getitem__(self, idx):
         click_history = self.data[idx]["click_history"]
         grid_history = self.data[idx]["grid_history"]
-        img = self.feather_planes_gen(click_history, grid_history)
+        img, score_now = self.feather_planes_gen(click_history, grid_history)
         img = torch.tensor(img,dtype=torch.float32)
-        target_pi = self.data[idx]["Pi"]
+        target_pi = self.data[idx]["pi_history"]
         target_pi = torch.tensor(target_pi,dtype=torch.float32)
-        target_p = self.data[idx]["P"]
-        target_p = torch.tensor([target_p],dtype=torch.float32)
-        target_p = 1 / target_p
-        target = torch.cat((target_pi, target_p), dim=0)
-        return img, target
+        final_P = self.data[idx]["final_P"]
+        target_P = (final_P - score_now) / CO_P
+        target_P = torch.tensor([target_P],dtype=torch.float32)
+        target = torch.cat((target_pi, target_P), dim=0)
+        return img, target  
 
     def feather_planes_gen(self, click_history, grid_history):
         gen_game = Triple()
@@ -295,9 +290,8 @@ class TripleDataset(Dataset):
         feather_planes = []
         for index, value in placement:
             gen_game.num_pool = value
-            gen_game.place(index, value[0])
-            input1 = F.pad(self.board,(1,1,1,1),mode="constant",value=0)
-            input2 = F.pad(self.num_pool,(0, 2),mode="constant", value=0)
+            input1 = F.pad(gen_game.board,(1,1,1,1),mode="constant",value=0)
+            input2 = F.pad(gen_game.num_pool,(0, 2),mode="constant", value=0)
             input2 = torch.reshape(input2,(2,2))
             input2 = F.pad(input2,(0,4,0,4), mode="constant", value=0)
             input = input1 + input2
@@ -306,7 +300,11 @@ class TripleDataset(Dataset):
             feather_plane = torch.cat(input, last_feather_plane, 0)
             last_feather_plane = feather_plane[:-1]
             feather_planes.append(feather_plane)
-        return feather_planes
+
+            gen_game.place(index, value[0])
+            score_now = gen_game.score
+        
+        return feather_planes, score_now
     
     def remove_duplicates(self, raw):
         data = []
@@ -328,7 +326,7 @@ class TripleDataset(Dataset):
             if (not i in log) and i != "log.json":
                 log.append(i)
                 with open("data/" + i, "r") as f:
-                    data += json.loads(f.read())
+                    data.append(json.loads(f.read()))
         with open("data/log.json", 'w') as f:
             f.write(json.dumps(log))
         data = self.remove_duplicates(data)
@@ -346,12 +344,12 @@ def train(dataset0):
     for epoch in range(epochs):
         for data in tqdm.tqdm(dataloader):
             img, target = data
-            img = img[0].cuda()
-            target = target[0].cuda()
+            img = img.cuda()
+            target = target.cuda()
 
             outputs = train_resnet(img)
-            result_loss1 = loss1(outputs[-1], target[-1])
-            result_loss2 = loss2(outputs[:-1], torch.argmax(target[:-1]))
+            result_loss1 = loss1(outputs[:, 16], target[:,16])
+            result_loss2 = loss2(outputs[:, :16], target[:,:16])
 
             result_loss = (result_loss1 + result_loss2)
             optim.zero_grad()
@@ -359,14 +357,18 @@ def train(dataset0):
             optim.step()
 
 class AlphaTriple:
-    def __init__(self, device_list, device_index):
+    def __init__(self, device_list, device_index, model_real_path):
         self.device_list = device_list
         self.deivce_index = device_index
-        self.model_index = model_index
-        self.device = self.device_list[self.deivce_index]
+        self.model_real_path = model_real_path
+        
+        if device_list == torch.device("cpu"):
+            self.device = device_list
+        else:
+            self.device = self.device_list[self.deivce_index]
         self.resnet = ResNet()
-        self.model_path = model_real_path
-        if self.model_path is not None:
+
+        if self.model_real_path is not None:
             self.resnet.load_state_dict(torch.load(self.model_path))
 
         self.resnet = self.resnet.to(self.device)
@@ -389,11 +391,18 @@ class AlphaTriple:
                           position=self.deivce_index, leave=False)
         while True:
             N0 = self.tree.tree[0]['N0']
-            self.tree.expand_and_evaluate()
+            root_P = self.tree.tree[0]["P"]
+
+            if self.tree.tree[0]["ar"] > EXPLORATION_THRESHOLD:
+                dirichlet_dist  = torch.distributions.Dirichlet(ALPHA)
+                eta = dirichlet_dist.sample()
+                root_P = (1 - EPSI) * root_P + EPSI * eta
+
+            self.tree.select()
             with tqdm.tqdm.get_lock():
                 p_bar.update(1)
                 if  sum(N0) > TOTAL_VISIT_COUNT:
-                    temp = 1 if self.tree.tree[0]['ar'] < 30 else 0
+                    temp = 1 if self.tree.tree[0]['ar'] < EXPLORATION_THRESHOLD else 0
                     select_move = self.select_action(N0, temp)
                     self.tree.restart(select_move)
                     p_bar.close()
@@ -417,6 +426,7 @@ class AlphaTriple:
             grid_history.append(tree_root["num_pool"].tolist())
             pi_history.append(pi.tolist())
             board_history.append(bd.tolist())
+            #print(bd)
             
         experience = {
                 "final_board": board_history[-1],
@@ -424,10 +434,10 @@ class AlphaTriple:
                 "grid_history": grid_history,
                 "pi_history": pi_history,
                 "steps": len(click_history),
-                "P":0
+                "final_P":0
         }
         score = score_count(experience)
-        experience["P"] = int(score)
+        experience["final_P"] = int(score)
         name = time.asctime().replace(" ", "_")
         name = name.replace(":", "_")
         name += "of_model_" + str(self.model_index)
@@ -439,12 +449,12 @@ def worker_init_fn(worker_id):
     torch.manual_seed(seed)
 
 def run(arg):
-    steps, device_list, device_index = arg
+    steps, device_list, device_index, model_real_path= arg
     for i in range(steps):
-        alphatriple = AlphaTriple(device_list=device_list, device_index=device_index)
+        alphatriple = AlphaTriple(device_list=device_list, device_index=device_index, model_real_path=model_real_path)
         alphatriple.self_play()
 
-def generator(epochs, device_count):#EPOCH = TASK_PER_GPU * DEVICE_COUNT * STEPS_PER_DEVICE
+def generator(epochs, device_count, model_real_path):#EPOCH = TASK_PER_GPU * DEVICE_COUNT * STEPS_PER_DEVICE
     if device_count != 0:
         device_list = [torch.device(f"cuda:{i}") for i in range(device_count)]
         print(f"Using {device_count} GPUs.")
@@ -455,35 +465,41 @@ def generator(epochs, device_count):#EPOCH = TASK_PER_GPU * DEVICE_COUNT * STEPS
         device_count = 1
     if device_count > 1: #多进程
         steps_per_device = epochs // device_count // TASK_PER_DEVICE
-        tasks = [(steps_per_device, device_list, i) for i in range(device_count * TASK_PER_DEVICE)]
+        tasks = [(steps_per_device, device_list, i, model_real_path) for i in range(device_count * TASK_PER_DEVICE)]
         with multiprocessing.Pool(processes=device_count * TASK_PER_DEVICE, initializer=worker_init_fn, initargs=(1,)) as po:
             po.map(run, tasks)
         
     else: #单进程
-        run((epochs, device_list, 0))  
-    
+        run((epochs, device_list, 0, model_real_path))  
+
+C_PUCT = 3.0
+EPSI = 0.25
+CO_P = 1000
+TOTAL_VISIT_COUNT = 800
+TASK_PER_DEVICE = 1
+MAXIMUM_DEVICE_COUNT = 1
+EXPLORATION_THRESHOLD = 30
+ALPHA = torch.full((16,), 0.03)
+
 if __name__ == "__main__":
     model_name = "demo"
     model_path = "model/"
-    MAXIMUM_VISIT_COUNT = 5
-    C_PUCT = 3.0
-    EPSI = 0.25
-    TOTAL_VISIT_COUNT = 800
-    TASK_PER_DEVICE = 1
+    
     
     device_count = torch.cuda.device_count()
+    device_count = min(device_count, MAXIMUM_DEVICE_COUNT)
 
     parser = argparse.ArgumentParser(description='Monte Carlo Tree Search Example')
     parser.add_argument('--mode', type=str, default='generate')
     parser.add_argument('--selection', type=int, default = 0)
-    parser.add_argument('--epoch', type=int, default=1)
+    parser.add_argument('--epoch', type=int, default=10)
     args = parser.parse_args()
     if args.mode == "generate":
         
         model_index = args.selection
         generate_epoch = args.epoch
         model_real_path = model_path + model_name + str(model_index) + ".pt" if model_index > 0 else None
-        generator(generate_epoch, device_count)
+        generator(generate_epoch, device_count, model_real_path)
         
     if args.mode == 'train':
         index = args.selection
