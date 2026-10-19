@@ -4,7 +4,7 @@ import torch
 resnet = ResNet()
 
 device = torch.device("cuda:0")
-input = torch.rand(512,32,4,4)
+input = torch.rand(512,4,4,4)
 batch = torch.stack([i for i in input])
 batch = batch.to(device)
 batch = batch.half()

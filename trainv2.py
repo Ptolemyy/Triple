@@ -41,7 +41,7 @@ class Tree:
             "suf_index": torch.full((16,), -1, dtype=torch.int16),
             "p0": torch.zeros((16,16), dtype=torch.float16),
             "v0": torch.zeros((16,), dtype=torch.float16),
-            "r_input": torch.zeros((8, 6, 6)),
+            "r_input": torch.zeros((4, 4, 4)),
             "num": 0,
             "N0": torch.zeros((16, ), dtype=torch.float16),
             "N_s": 0,
@@ -282,26 +282,30 @@ class TripleDataset(Dataset):
 
     def feather_planes_gen(self, click_history, grid_history):
         gen_game = Triple()
-        last_feather_plane = torch.zeros((7, 6, 6), dtype=torch.int16)
         placement = zip(click_history, grid_history)
-        feather_planes = []
+        
+        ln3_board = torch.log(torch.full((4,4), 3))
+        
         for index, value in placement:
             gen_game.num_pool = value
-            input1 = F.pad(gen_game.board,(1,1,1,1),mode="constant",value=0)
-            input2 = F.pad(gen_game.num_pool,(0, 2),mode="constant", value=0)
-            input2 = torch.reshape(input2,(2,2))
-            input2 = F.pad(input2,(0,4,0,4), mode="constant", value=0)
-            input = input1 + input2
+            raw_board = torch.reshape(gen_game.board, (4,4))
+            num_pool = gen_game.num_pool
+            
+            ln_board = torch.log(raw_board)
+            log_3_board = ln_board / ln3_board
+            raw_sliced_board = self.raw_sliced_gen(raw_board)
+            num_pool_0_board = torch.full((4,4),num_pool[0])
+            num_pool_1_board = torch.full((4,4),num_pool[1])
+            input = torch.stack([log_3_board, raw_board, num_pool_0_board, num_pool_1_board])
             input = input.to(torch.float16)
-            input = torch.reshape(input,(1,6,6))
-            feather_plane = torch.cat(input, last_feather_plane, 0)
-            last_feather_plane = feather_plane[:-1]
-            feather_planes.append(feather_plane)
-
+            
             gen_game.place(index, value[0])
             score_now = gen_game.score
         
-        return feather_planes, score_now
+        return input, score_now
+    
+    def raw_sliced_gen(self, board):
+        return torch.minimum(board, torch.ones((4,4)))
     
     def remove_duplicates(self, raw):
         data = []
